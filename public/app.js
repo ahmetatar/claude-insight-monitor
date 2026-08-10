@@ -40,6 +40,11 @@ const state = {
   deleteError: null,
   breakdownOpen: false,
   breakdownFilter: '',
+  /* Exact section counts, keyed `sessionId#turnIndex`. Only ever filled by an
+     explicit click, because producing one spends the user's quota. */
+  measurements: {},
+  measuring: null,
+  measureError: null,
   /* Session-wide tool statistics, fetched separately: one fact about the whole
      session rather than something that belongs on every turn. */
   tools: null,
@@ -165,6 +170,7 @@ async function selectSession(sessionId) {
 }
 
 function selectTurn(i) {
+  state.measureError = null;
   if (i < 0 || i >= state.turns.length) return;
   state.turnIndex = i;
   /* Picking the newest turn is how you get back to following the tail. */
@@ -310,6 +316,7 @@ function renderDetail() {
   renderBreakdown(turn);
   renderTools();
   renderPrompt(turn);
+  renderMeasure();
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
 
   el('json-expand').onclick = () => container.querySelectorAll('.json-view details').forEach((d) => (d.open = true));
@@ -606,6 +613,98 @@ function renderPromptChanges() {
   foot.querySelectorAll('[data-turn]').forEach((button) => {
     button.onclick = () => selectTurn(Number(button.dataset.turn));
   });
+}
+
+/* --------------------------------------------------------- exact counting */
+
+/* Every token figure in the breakdown is `chars / 4`, because the API reports
+   usage in aggregate and never per section. count_tokens will answer exactly,
+   for a price — so this only ever runs when asked. */
+function measureKey(index) {
+  return `${state.sessionId}#${index}`;
+}
+
+function renderMeasure() {
+  const button = el('measure-btn');
+  const panel = el('measure-result');
+  if (!button || !panel) return;
+
+  const key = measureKey(state.turnIndex);
+  const result = state.measurements[key];
+  const busy = state.measuring === key;
+
+  button.disabled = busy;
+  button.textContent = busy ? 'measuring…' : result ? 'measured' : 'Measure exactly';
+  button.onclick = () => measureCurrentTurn();
+
+  if (state.measureError) {
+    panel.hidden = false;
+    panel.innerHTML = `<div class="font-mono text-[11px]" style="color:var(--danger)">${escapeHtml(state.measureError)}</div>`;
+    return;
+  }
+  if (!result) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const rows = [
+    ['system prompt', result.estimated.system, result.exact.system],
+    ['messages', result.estimated.messages, result.exact.messages],
+    ['tool definitions', result.estimated.tools, result.exact.tools],
+    ['request overhead', null, result.exact.baseline],
+    ['total', result.estimated.total, result.exact.total],
+  ];
+
+  const off = result.ratio != null ? Math.round((result.ratio - 1) * 100) : null;
+  panel.innerHTML = `
+    <div class="label-eyebrow mb-4">Measured with count_tokens</div>
+    <div class="flex flex-col">
+      ${rows
+        .map(
+          ([label, estimated, exact]) => `
+        <div class="stat-row">
+          <div class="min-w-0 font-mono text-[12px] truncate">${escapeHtml(label)}</div>
+          <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
+            ${compactNum(exact)}
+            ${estimated != null ? `<span class="text-dim dark:text-dim-dk">· est ${compactNum(estimated)}</span>` : ''}
+          </div>
+        </div>`
+        )
+        .join('')}
+    </div>
+    <div class="mt-5 font-mono text-[11px] text-dim dark:text-dim-dk">
+      ${
+        off == null
+          ? ''
+          : `the chars/4 estimate was ${off === 0 ? 'exact' : `${off > 0 ? 'under' : 'over'} by ${Math.abs(off)}%`} on this request · ${result.charsPerToken.toFixed(
+              2
+            )} chars per token${result.cached ? ' · cached' : ` · ${result.calls} count_tokens calls`}
+    </div>`
+      }`;
+}
+
+async function measureCurrentTurn() {
+  const key = measureKey(state.turnIndex);
+  if (state.measurements[key] || state.measuring) return;
+  state.measuring = key;
+  state.measureError = null;
+  renderMeasure();
+
+  try {
+    const response = await fetch(
+      `/api/sessions/${encodeURIComponent(state.sessionId)}/turns/${state.turnIndex}/count`,
+      { method: 'POST' }
+    );
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.message || body.error || `HTTP ${response.status}`);
+    state.measurements[key] = body;
+  } catch (err) {
+    state.measureError = err.message;
+  } finally {
+    state.measuring = null;
+    renderMeasure();
+  }
 }
 
 /* --------------------------------------------------------------- network */

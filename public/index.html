@@ -233,11 +233,16 @@
         <section class="card min-w-0">
           <div class="card-head">
             <h3>What fills the window</h3>
-            <span class="font-mono text-[11px] text-dim dark:text-dim-dk" id="breakdown-sub"></span>
+            <div class="flex items-center gap-4">
+              <span class="font-mono text-[11px] text-dim dark:text-dim-dk" id="breakdown-sub"></span>
+              <button id="measure-btn" type="button" class="ghost-btn shrink-0"
+                title="Counts this turn's sections exactly, using four count_tokens calls">Measure exactly</button>
+            </div>
           </div>
           <div class="card-body">
             <div id="composition-bar" class="comp-bar"></div>
             <div id="composition-legend" class="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-y-7 divide-cells"></div>
+            <div id="measure-result" class="mt-8" hidden></div>
           </div>
           <div class="card-foot" id="breakdown-detail"></div>
         </section>

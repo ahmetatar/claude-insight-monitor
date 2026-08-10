@@ -14,6 +14,8 @@ const { analyzePrompt } = require('./prompt-anatomy');
 const { analyzeTools } = require('./tool-economics');
 const { analyzeThinking } = require('./thinking');
 const { analyzeNetwork } = require('./network');
+const credentials = require('./credentials');
+const { measureTurn } = require('./token-count');
 const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -25,6 +27,11 @@ const MIME = {
 
 const bus = new EventEmitter();
 bus.setMaxListeners(100);
+
+/* Exact measurements, keyed by session and turn. In memory: they cost upstream
+   requests to produce, so they are worth keeping for the life of the process,
+   and they are cheap to produce again after a restart. */
+const measurements = new Map();
 
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
@@ -102,6 +109,7 @@ function createServer() {
     try {
       if (req.method === 'POST' && req.url.startsWith('/v1/')) {
         await handleProxyRequest(req, res, {
+          onCredentials: (sessionId, headers) => credentials.remember(sessionId, headers),
           onCapture: (turn) => {
             store.appendTurn(turn.sessionId, turn);
             bus.emit('turn', annotateLive(turn));
@@ -138,6 +146,42 @@ function createServer() {
           withBreakdown(turn, annotations[i].cache, annotations[i].history, annotations[i].prompt)
         );
         sendJson(res, 200, turns);
+        return;
+      }
+
+      /* Measuring calls the API and spends the user's quota, so it is a POST
+         that only ever happens because someone asked for it — never on render,
+         never on capture. Results are cached so asking twice is free. */
+      const countMatch = req.method === 'POST' && req.url.match(/^\/api\/sessions\/([^/]+)\/turns\/(\d+)\/count$/);
+      if (countMatch) {
+        const sessionId = decodeURIComponent(countMatch[1]);
+        const index = Number(countMatch[2]);
+        const key = `${sessionId}#${index}`;
+        if (measurements.has(key)) {
+          sendJson(res, 200, { ...measurements.get(key), cached: true });
+          return;
+        }
+        const turn = store.getTurns(sessionId)[index];
+        if (!turn) {
+          sendJson(res, 404, { error: 'no_such_turn' });
+          return;
+        }
+        const headers = credentials.headersFor(sessionId);
+        if (!headers) {
+          sendJson(res, 409, {
+            error: 'no_credential',
+            message:
+              'No credential for this session. Measuring needs one: run a turn through the proxy first, or start it with ANTHROPIC_API_KEY set.',
+          });
+          return;
+        }
+        try {
+          const result = await measureTurn(turn, headers);
+          measurements.set(key, result);
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, 502, { error: 'count_failed', message: err.message, status: err.status || null });
+        }
         return;
       }
 

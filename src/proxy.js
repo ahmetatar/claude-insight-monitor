@@ -236,7 +236,11 @@ function captureRequestParams(body) {
  * Forwards req to the real Anthropic API, pipes the response back to res
  * untouched, and calls onCapture(turn) once the exchange completes.
  */
-async function handleProxyRequest(req, res, { onCapture }) {
+async function handleProxyRequest(req, res, { onCapture, onCredentials }) {
+  /* Handed over in memory, before the capture record is built — the record
+     itself never sees these headers. */
+  if (onCredentials) onCredentials(req.headers['x-claude-code-session-id'] || 'default', req.headers);
+
   const rawBody = await readBody(req);
   let requestBody = null;
   try {

@@ -153,7 +153,9 @@ key. Three safeguards:
 - **Raw JSON** — the complete captured request and response, collapsible.
 
 Token figures in the breakdown are estimates (`chars / 4`); the API only reports
-usage in aggregate. The four numbers under the ring are the real ones.
+usage in aggregate. The four numbers under the ring are the real ones — and
+**Measure exactly** replaces the estimate with a measurement, at the cost of four
+`count_tokens` calls. See below.
 
 ---
 
@@ -183,6 +185,35 @@ Claude Code also prepends its own billing header as the first system block
 (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
 build that produced it and whether it came from the terminal (`cli`) or the
 Agent SDK (`sdk-cli`).
+
+## Measuring instead of estimating
+
+`count_tokens` answers exactly, but only for a whole request, so the sections
+have to be isolated by measuring four of them and subtracting: a minimal
+baseline, baseline plus tools, baseline plus system, and the real request. Tools
+and system fall out of the differences, the messages are what is left, and the
+baseline is the fixed per-request overhead nothing else shows you.
+
+Four calls rather than one per section — measuring per message would be one call
+per message. It reports the calibration too: how far `chars / 4` was off on this
+request, and the chars-per-token the request actually averaged, which is the
+number to read every other estimate by.
+
+**It spends your quota, so nothing measures on its own.** It happens on an
+explicit click, results are cached so asking twice is free, and the button says
+what it will do before you press it.
+
+### The credential
+
+Measuring means calling the API, which needs a credential — and everything else
+in this proxy is built so credentials never reach disk. The line drawn here is
+narrower but explicit: the auth header of a session's last request is kept in a
+**process-lifetime map in memory**, never written to disk, never logged, never
+returned by any endpoint, and used only to authenticate a count for the session
+it came from. Restarting the proxy forgets it.
+
+If you would rather it never reuse Claude Code's own credential, start the proxy
+with `ANTHROPIC_API_KEY` set — an explicit key always wins.
 
 ## Over the wire
 
@@ -352,6 +383,9 @@ kept whole, plus the parts of the exchange that live outside them:
 
 Credentials are never written: `authorization`, `x-api-key`, `cookie` and
 `set-cookie` are dropped before the record is built, not redacted afterwards.
+(The one place a credential is held at all is described under *Measuring instead
+of estimating* — in memory, for the life of the process, and only to answer an
+explicit request to measure.)
 
 Captures written before this schema are still read; they simply lack the new
 fields.
@@ -372,6 +406,8 @@ src/prompt-anatomy.js system prompt split into sections, plus the reminder layer
 src/tool-economics.js what each tool definition costs against how often it is called
 src/thinking.js       thinking tokens, block order, and the cost of replaying signatures
 src/network.js        latency split, retries, failures, and rate-limit budget
+src/token-count.js    exact section sizes via four count_tokens calls
+src/credentials.js    in-memory-only auth, used solely for those calls
 src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)
