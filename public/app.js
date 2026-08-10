@@ -40,6 +40,9 @@ const state = {
   deleteError: null,
   breakdownOpen: false,
   breakdownFilter: '',
+  /* Session-wide tool statistics, fetched separately: one fact about the whole
+     session rather than something that belongs on every turn. */
+  tools: null,
 };
 
 let historyChart = null;
@@ -128,9 +131,33 @@ async function loadSessions() {
   }
 }
 
+/* Tool stats go stale as a live session runs, but they change slowly and cost a
+   full re-read of the session to compute — so a burst of turns coalesces into
+   one refresh instead of one per turn. */
+let toolRefreshTimer = null;
+function scheduleToolRefresh(sessionId) {
+  clearTimeout(toolRefreshTimer);
+  toolRefreshTimer = setTimeout(async () => {
+    await loadTools(sessionId);
+    if (state.sessionId === sessionId) renderTools();
+  }, 2000);
+}
+
+async function loadTools(sessionId) {
+  try {
+    state.tools = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/tools`);
+  } catch {
+    state.tools = null; // the card simply stays hidden
+  }
+}
+
 async function selectSession(sessionId) {
   state.sessionId = sessionId;
+  state.tools = null;
   state.turns = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/turns`);
+  loadTools(sessionId).then(() => {
+    if (state.sessionId === sessionId) renderTools();
+  });
   state.turnIndex = state.turns.length - 1;
   state.pinned = false;
   renderSessionList();
@@ -279,6 +306,7 @@ function renderDetail() {
   renderHistory();
   renderTrajectory();
   renderBreakdown(turn);
+  renderTools();
   renderPrompt(turn);
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
 
@@ -404,6 +432,75 @@ function renderStats(turn) {
         }">${v == null ? '—' : compactNum(v)}</dd>
       </div>`;
   }).join('');
+}
+
+/* ----------------------------------------------------------------- tools */
+
+/* Tool definitions render at the front of the prompt, so every one of them is
+   re-sent on every turn of the session whether the model calls it or not. That
+   makes an unused tool a fixed line item rather than a harmless extra. */
+function renderTools() {
+  const card = el('tools-card');
+  const data = state.tools;
+  if (!data || !data.tools.length) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  const { totals } = data;
+  el('tools-sub').textContent = `${data.tools.length} tools · ${compactNum(totals.definitionTokens)} tokens of definitions`;
+
+  const max = Math.max(1, ...data.tools.map((t) => t.definitionTokens));
+  el('tools-rows').innerHTML = data.tools
+    .map((tool) => {
+      const unused = tool.calls === 0;
+      return `
+      <div class="stat-row" ${unused ? 'style="opacity:.55"' : ''}>
+        <div class="min-w-0 flex items-center gap-2.5">
+          <span class="font-mono text-[12px] truncate" title="${escapeHtml(tool.name)}">${escapeHtml(tool.name)}</span>
+          ${
+            unused
+              ? '<span class="font-mono text-[10px] uppercase tracking-[0.1em] text-dim dark:text-dim-dk shrink-0">never called</span>'
+              : `<span class="font-mono text-[10.5px] tabular-nums shrink-0" style="color:var(--signal)">×${tool.calls}</span>`
+          }
+        </div>
+        <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
+          ${compactNum(tool.definitionTokens)}
+          ${tool.resultTokens ? `<span class="text-dim dark:text-dim-dk">· ${compactNum(tool.resultTokens)} back</span>` : ''}
+        </div>
+        <div class="stat-share"><span style="width:${((tool.definitionTokens / max) * 100).toFixed(1)}%;background:${
+          unused ? 'color-mix(in srgb, var(--dim) 55%, transparent)' : 'var(--signal)'
+        }"></span></div>
+      </div>`;
+    })
+    .join('');
+
+  const share = totals.definitionTokens > 0 ? totals.unusedTokens / totals.definitionTokens : 0;
+  const lines = [
+    `${totals.unusedCount} of ${data.tools.length} tools were never called — ${compactNum(
+      totals.unusedTokens
+    )} tokens (${Math.round(share * 100)}% of the definitions) re-sent on every turn`,
+  ];
+  if (totals.promptCost > 0) {
+    lines.push(
+      `definitions account for ≈${money(totals.attributedCost)} of the ${money(
+        totals.promptCost
+      )} this session spent on prompts`
+    );
+  }
+  if (totals.resultTokens) lines.push(`${compactNum(totals.resultTokens)} tokens came back as tool results`);
+  lines.push(
+    data.churn.length
+      ? `the tool list changed on ${data.churn.length} turn${
+          data.churn.length === 1 ? '' : 's'
+        } — each change invalidates the whole cache`
+      : 'the tool list never changed, so it stayed cacheable all session'
+  );
+
+  el('tools-foot').innerHTML = lines
+    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .join('');
 }
 
 /* --------------------------------------------------------- system prompt */
@@ -1446,6 +1543,7 @@ function connectLive() {
 
     if (turn.sessionId === state.sessionId) {
       state.turns.push(turn);
+      scheduleToolRefresh(turn.sessionId);
       if (state.pinned) {
         renderLiveTail();
       } else {

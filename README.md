@@ -140,6 +140,8 @@ key. Three safeguards:
   token space with its cache breakpoints and the exact point where it stopped
   matching the previous turn, what the turn cost, and what it would have cost
   with no cache at all. See below.
+- **Tool definitions** — every tool, what its definition costs, and how often
+  the model actually called it. See below.
 - **Inside the system prompt** — the fixed instructions broken into the sections
   they are made of, ranked by size, plus the `<system-reminder>` blocks injected
   into the messages. See below.
@@ -176,6 +178,31 @@ Claude Code also prepends its own billing header as the first system block
 (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
 build that produced it and whether it came from the terminal (`cli`) or the
 Agent SDK (`sdk-cli`).
+
+## What the tool list costs
+
+Tool definitions render at the very front of the prompt, so all of them are
+re-sent on every turn of a session whether the model ever calls them or not.
+That makes an unused tool a fixed line item, not a harmless extra — and because
+they sit ahead of everything else, adding or removing one invalidates the whole
+cache.
+
+In the session captured here: 59 tools, 34.9K tokens of definitions, and **58 of
+them were never called**. The one that was, `Bash`, has a 613-token definition
+and returned 16.3K tokens of results.
+
+The bill is attributed rather than assumed. Definitions are served from cache
+after the first turn, so charging them at full input price would be wrong by an
+order of magnitude; instead each turn's real prompt spend is split by the share
+of the prompt the definitions occupy. On that basis they account for ≈$2.76 of
+the $5.84 that session spent on prompts.
+
+Tool-list changes are listed too, since each one ends the cached prefix at its
+turn. In these captures the list never changed.
+
+Because this is one fact about a whole session rather than a property of a turn,
+it is served from its own endpoint (`/api/sessions/<id>/tools`) instead of being
+repeated on all 118 turns.
 
 ## Inside the system prompt
 
@@ -291,6 +318,7 @@ src/cache-forensics.js  chain walking, prefix diffing, and what a cache miss cos
 src/call-kinds.js     sorts each request into agent loop / subagent / background
 src/history-diff.js   what changed in the message list since the previous turn
 src/prompt-anatomy.js system prompt split into sections, plus the reminder layer
+src/tool-economics.js what each tool definition costs against how often it is called
 src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)

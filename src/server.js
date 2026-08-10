@@ -11,6 +11,7 @@ const { computeBreakdown } = require('./breakdown');
 const { analyzeTurn, walkChains, predecessorOf, chainKey, CANDIDATE_DEPTH } = require('./cache-forensics');
 const { diffHistory } = require('./history-diff');
 const { analyzePrompt } = require('./prompt-anatomy');
+const { analyzeTools } = require('./tool-economics');
 const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -133,6 +134,15 @@ function createServer() {
           withBreakdown(turn, annotations[i].cache, annotations[i].history, annotations[i].prompt)
         );
         sendJson(res, 200, turns);
+        return;
+      }
+
+      /* Session-scoped rather than per-turn: the tool list is one fact about the
+         whole session, and repeating it on all 118 turns would dwarf them. */
+      const toolsMatch = req.method === 'GET' && req.url.match(/^\/api\/sessions\/([^/]+)\/tools$/);
+      if (toolsMatch) {
+        const sessionId = decodeURIComponent(toolsMatch[1]);
+        sendJson(res, 200, analyzeTools(store.getTurns(sessionId)));
         return;
       }
 
