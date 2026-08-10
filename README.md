@@ -10,6 +10,37 @@ disk under `~/.cxt-proxy/captures/`.
 
 ---
 
+## What it's for
+
+Claude Code shows you a conversation. What it sends is something else: a prompt
+rebuilt from scratch on every turn, most of it identical to the last one, some of
+it edited underneath you, and over a third of the requests not part of the
+conversation at all. The bill and the context window are both consequences of
+that — and neither the CLI nor the API tells you which part of it did what.
+
+`usage` is the clearest example. It reports that a turn re-wrote 40,000 tokens.
+It does not report *why*, and why is the half you can act on: a rewrite caused by
+a changed system block is a bug you can fix, one caused by an expired cache TTL
+is not. Everything here exists to close that kind of gap.
+
+Concretely, in one real 118-turn session it found:
+
+- **58 of 59 tool definitions were never called** — 34.9K tokens re-sent on every
+  turn, about half of what the session spent on prompts.
+- **43 of the 118 requests were shell-command security classifiers**, not the
+  conversation at all — invisible in the CLI and in the bill.
+- **26% of the message history was thinking signatures** — bytes nobody can read,
+  replayed on every subsequent turn.
+- **28% of the system prompt** was browser-automation instructions, in a session
+  that never opened a browser.
+- Cache spend of **$6.97 against $44.16 without caching** — and the 21 turns where
+  the cache broke early, each traced to the exact block that changed.
+
+None of those numbers are visible anywhere else, and each one is something you
+can do something about.
+
+---
+
 ## Install
 
 ```sh
@@ -50,6 +81,75 @@ clean up: when `claude` exits, the proxy stops.
 
 Those two cover almost everything. `start` / `stop` / `status` are there for the
 cases they don't: leaving the proxy up across several sessions, and checking on it.
+
+---
+
+## What to do with it
+
+The page is organised by mechanism; the questions people actually arrive with cut
+across it. Start here.
+
+### "Where is my money going?"
+
+Open the session and read three cards in order. **Where the calls go** splits the
+spend by what each request actually was — background classifiers and subagents
+usually surprise people. **Cache** shows the session total against what it would
+have cost with no caching, so you know whether the caching is working at all.
+**Tool definitions** shows how much of every prompt is tool schemas you never use.
+
+### "Why is my cache always cold?"
+
+Step through turns and watch the **Cache** card's verdict. A run of *partial hit*
+means something inside the cached region keeps changing — the card names the
+block. Common culprits are a timestamp or a rewritten mid-conversation `system`
+message. If the verdict is *miss* with the prefix unchanged, it will say so and
+point at the TTL instead. **Inside the system prompt** flags any prompt section
+that changed mid-session, which ends the cached prefix at that turn.
+
+### "Which tools can I turn off?"
+
+**Tool definitions** ranks every tool by what its definition costs and marks the
+ones never called. To find out whether removing them would actually have changed
+the answer, use **Time machine → Replay** with tools set to *only the ones ever
+called*, and compare the stop reason and the tool calls — not just the price.
+
+### "Why did that turn take so long?"
+
+**Over the wire** splits latency into the wait before the first byte (queueing and
+prompt processing) and the generation that follows. A long first half with a
+normal second half is not a slow model. The same card shows whether the SDK
+already retried the request without telling anyone, and how much rate-limit
+budget is left.
+
+### "How much did that subagent really cost?"
+
+**Threads** lists the conversation and each subagent separately, with what each
+spent and — inferred from ordering — which call spawned it and how many tokens it
+handed back. The ratio between those two is the point.
+
+### "Am I about to run out of context?"
+
+Under **History over time**: how fast the window is filling and how many turns of
+headroom that leaves at the current rate. The same footer lists every turn where
+the transcript was edited rather than appended to, which is where tokens quietly
+disappear from what the model can see.
+
+### "This turn went wrong — let me reproduce it"
+
+**Copy as curl** on the Raw JSON card gives you the exact request as a runnable
+command, with your key left as `$ANTHROPIC_API_KEY`. **Copy request** gives the
+body alone as a fixture.
+
+### "Are these token numbers real?"
+
+Mostly they are estimates (`chars / 4`), and the card says so. **Measure exactly**
+replaces them with real counts from `count_tokens` and tells you how far off the
+estimate was, which calibrates every other number on the page.
+
+> Two actions send real requests and spend quota — **Measure exactly** and
+> **Replay**. Both are explicit clicks, never automatic, and both say what they
+> will do before you press them. Everything else on the page is read from
+> captures already on disk.
 
 ---
 
