@@ -277,6 +277,7 @@ function renderDetail() {
   renderCalls();
   renderCache(turn);
   renderHistory();
+  renderTrajectory();
   renderBreakdown(turn);
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
 
@@ -402,6 +403,98 @@ function renderStats(turn) {
         }">${v == null ? '—' : compactNum(v)}</dd>
       </div>`;
   }).join('');
+}
+
+/* ------------------------------------------------------------ trajectory */
+
+const SHAPE_LABEL = {
+  edit: 'edited in place',
+  branch: 'replayed from an earlier point',
+  compaction: 'compacted',
+  reset: 'history replaced',
+};
+
+/* Where the window is heading, and every point where the harness changed the
+   transcript underneath the model. Both are invisible in the usage numbers:
+   growth because it is a trend, edits because a rewritten message costs the same
+   as the one it replaced. */
+function renderTrajectory() {
+  const foot = el('history-foot');
+  const points = mainChain();
+  const lines = [];
+
+  if (points.length > 1) {
+    const window = points.slice(-12);
+    const first = contextTokens(window[0].turn);
+    const last = contextTokens(window[window.length - 1].turn);
+    const perTurn = (last - first) / (window.length - 1);
+    const limit = contextLimit(window[window.length - 1].turn);
+    const headroom = limit - last;
+
+    if (perTurn > 0) {
+      const turnsLeft = Math.floor(headroom / perTurn);
+      lines.push(
+        `growing ≈${compactNum(Math.round(perTurn))} tokens per turn · ≈${compactNum(turnsLeft)} turns of headroom below the ${compactNum(limit)} limit`
+      );
+    } else {
+      lines.push(`not growing over the last ${window.length} turns · ${compactNum(headroom)} tokens of headroom`);
+    }
+  }
+
+  /* Only the conversations. A background classifier's single message growing
+     between calls is how those calls work, not the transcript being edited
+     underneath a model, and there are enough of them to bury the real ones. */
+  const changed = state.turns
+    .map((turn, index) => ({ turn, index, history: turn.history, call: callOf(turn) }))
+    .filter((x) => x.history && x.history.shape !== 'append' && x.history.shape !== 'first')
+    .filter((x) => !x.call || x.call.group === 'main' || x.call.group === 'subagent');
+
+  const reclaimed = changed.reduce((sum, x) => sum + (x.history.tokensReclaimed || 0), 0);
+  const shapes = changed.reduce((acc, x) => {
+    acc[x.history.shape] = (acc[x.history.shape] || 0) + 1;
+    return acc;
+  }, {});
+
+  if (changed.length) {
+    const parts = Object.entries(shapes).map(([shape, n]) => `${n} turn${n === 1 ? '' : 's'} ${SHAPE_LABEL[shape] || shape}`);
+    lines.push(
+      `conversation history: ${parts.join(' · ')}${
+        reclaimed ? ` · ≈${compactNum(reclaimed)} tokens the model can no longer see` : ''
+      }`
+    );
+  }
+
+  const chips = changed
+    .slice(-14)
+    .map(
+      (x) =>
+        `<button type="button" class="ghost-btn tabular-nums" data-turn="${x.index}" title="${escapeHtml(
+          describeHistory(x.history)
+        )}">#${x.index + 1}</button>`
+    )
+    .join('');
+
+  foot.innerHTML = `
+    <div class="flex flex-col gap-3">
+      ${lines
+        .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+        .join('')}
+      ${chips ? `<div class="flex flex-wrap gap-2">${chips}</div>` : ''}
+    </div>`;
+
+  foot.querySelectorAll('[data-turn]').forEach((button) => {
+    button.onclick = () => selectTurn(Number(button.dataset.turn));
+  });
+}
+
+function describeHistory(history) {
+  const parts = [SHAPE_LABEL[history.shape] || history.shape];
+  if (history.removed) parts.push(`${history.removed} message${history.removed === 1 ? '' : 's'} dropped`);
+  for (const edit of history.edits.slice(0, 4)) {
+    parts.push(`message[${edit.index}] (${edit.role}) ${edit.kind} ${compactNum(edit.tokensBefore)}→${compactNum(edit.tokensAfter)}`);
+  }
+  if (history.edits.length > 4) parts.push(`+${history.edits.length - 4} more`);
+  return parts.join(' · ');
 }
 
 /* ----------------------------------------------------------------- calls */

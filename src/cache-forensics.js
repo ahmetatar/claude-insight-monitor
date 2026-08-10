@@ -256,16 +256,30 @@ function analyzeTurn(turn, candidates) {
  * own chain, and returns one analysis per turn.
  */
 function analyzeSession(turns) {
+  return walkChains(turns, (turn, prev) => analyzeTurn(turn, prev));
+}
+
+/** The predecessor a turn's cache was matched against, for callers outside this module. */
+function predecessorOf(turn, candidates) {
+  return pickPredecessor(unitsFor(turn), candidates);
+}
+
+/**
+ * Walks a session in order, handing each turn the predecessor of its own chain.
+ * Everything that compares a turn with what came before it — cache diffing,
+ * history diffing — has to agree on which turn that was, so they share one walk.
+ */
+function walkChains(turns, visit) {
   const byChain = new Map();
-  return turns.map((turn) => {
+  return turns.map((turn, index) => {
     const key = chainKey(turn);
     const history = byChain.get(key) || [];
-    const analysis = analyzeTurn(turn, history);
+    const result = visit(turn, predecessorOf(turn, history), index);
     history.push(turn);
     if (history.length > CANDIDATE_DEPTH) history.shift();
     byChain.set(key, history);
-    return analysis;
+    return result;
   });
 }
 
-module.exports = { analyzeTurn, analyzeSession, chainKey, prefixUnits, CANDIDATE_DEPTH };
+module.exports = { analyzeTurn, analyzeSession, walkChains, predecessorOf, chainKey, prefixUnits, CANDIDATE_DEPTH };

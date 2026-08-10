@@ -124,7 +124,9 @@ key. Three safeguards:
   cache read / cache write, against the model's real limit (1M variants are
   detected from the model id). Below it, the four usage numbers.
 - **History over time** — every turn's usage as a stacked area chart. Clicking a
-  point selects that turn.
+  point selects that turn. Underneath: how fast the window is filling, how many
+  turns of headroom that leaves, and every turn where the transcript was edited
+  rather than appended to — click one to jump there.
 - **What fills the window** — system prompt vs messages vs tool definitions as a
   proportion bar, then all individual sections ranked by size. Click any section
   to open an inspector with the full text: a tool's description, its parameters
@@ -171,6 +173,31 @@ Claude Code also prepends its own billing header as the first system block
 (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
 build that produced it and whether it came from the terminal (`cli`) or the
 Agent SDK (`sdk-cli`).
+
+## What happened to the history
+
+A conversation is supposed to grow by appending. Anything else is the harness
+editing the transcript underneath the model, and none of it shows up in the
+usage numbers — a rewritten message costs exactly what the one it replaced did.
+Each turn's message list is compared with the previous turn's, and the change is
+named:
+
+| Shape | What it means |
+| --- | --- |
+| append | Only new messages. The normal case. |
+| edit | A message that was already there came back different — rewritten, shortened, or a tool result cleared to reclaim room. |
+| branch | The list got shorter after a common prefix: an earlier state replayed. |
+| compaction | Most of the history is gone and the tokens collapsed with it — a summary standing in for what was there. |
+| reset | Nothing survived. |
+
+Only the conversations are reported. A background classifier's single message
+growing between calls is how those calls work, not an edited transcript, and
+there are enough of them to bury the real ones.
+
+In the session captured here nothing was compacted; what did happen, 21 times,
+was Claude Code rewriting a mid-conversation `system` message or shortening an
+earlier user message in place — each one landing inside the cached prefix, which
+is exactly what the cache card reports from the other side.
 
 ## Cache forensics
 
@@ -236,8 +263,9 @@ src/proxy.js          forwards to api.anthropic.com and records each exchange
 src/server.js         static files + /api/sessions, /api/events (SSE), /api/health
 src/capture-store.js  append-only JSONL store, one file per session
 src/breakdown.js      per-section size estimates for a request body
-src/cache-forensics.js  prefix diffing: what broke the cache, and what it cost
+src/cache-forensics.js  chain walking, prefix diffing, and what a cache miss cost
 src/call-kinds.js     sorts each request into agent loop / subagent / background
+src/history-diff.js   what changed in the message list since the previous turn
 src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)

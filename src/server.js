@@ -8,7 +8,8 @@ const { EventEmitter } = require('events');
 const { handleProxyRequest } = require('./proxy');
 const store = require('./capture-store');
 const { computeBreakdown } = require('./breakdown');
-const { analyzeTurn, analyzeSession, chainKey, CANDIDATE_DEPTH } = require('./cache-forensics');
+const { analyzeTurn, walkChains, predecessorOf, chainKey, CANDIDATE_DEPTH } = require('./cache-forensics');
+const { diffHistory } = require('./history-diff');
 const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -65,12 +66,13 @@ function handleSse(req, res) {
   });
 }
 
-function withBreakdown(turn, cache) {
+function withBreakdown(turn, cache, history) {
   return {
     ...turn,
     breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage),
     call: classify(turn),
     cache,
+    history,
   };
 }
 
@@ -84,7 +86,8 @@ function annotateLive(turn) {
   for (let i = history.length - 2; i >= 0 && candidates.length < CANDIDATE_DEPTH; i--) {
     if (chainKey(history[i]) === key) candidates.unshift(history[i]);
   }
-  return withBreakdown(turn, analyzeTurn(turn, candidates));
+  const prev = predecessorOf(turn, candidates);
+  return withBreakdown(turn, analyzeTurn(turn, prev), diffHistory(prev, turn));
 }
 
 function createServer() {
@@ -119,8 +122,11 @@ function createServer() {
       if (sessionTurnsMatch) {
         const sessionId = decodeURIComponent(sessionTurnsMatch[1]);
         const raw = store.getTurns(sessionId);
-        const cache = analyzeSession(raw);
-        const turns = raw.map((turn, i) => withBreakdown(turn, cache[i]));
+        const annotations = walkChains(raw, (turn, prev) => ({
+          cache: analyzeTurn(turn, prev),
+          history: diffHistory(prev, turn),
+        }));
+        const turns = raw.map((turn, i) => withBreakdown(turn, annotations[i].cache, annotations[i].history));
         sendJson(res, 200, turns);
         return;
       }
