@@ -210,6 +210,22 @@
           <div class="card-foot" id="breakdown-detail"></div>
         </section>
 
+        <!-- system prompt --------------------------------------------- -->
+        <section class="card min-w-0" id="prompt-card">
+          <div class="card-head">
+            <h3>Inside the system prompt</h3>
+            <span class="font-mono text-[11px] text-dim dark:text-dim-dk" id="prompt-sub"></span>
+          </div>
+          <div class="card-body flex flex-col gap-8">
+            <div id="prompt-sections" class="flex flex-col"></div>
+            <div class="min-w-0" id="prompt-reminders-wrap">
+              <div class="label-eyebrow mb-4">Injected into the messages</div>
+              <div id="prompt-reminders" class="flex flex-col"></div>
+            </div>
+          </div>
+          <div class="card-foot" id="prompt-foot"></div>
+        </section>
+
         <!-- raw json -------------------------------------------------- -->
         <section class="card min-w-0">
           <div class="card-head">

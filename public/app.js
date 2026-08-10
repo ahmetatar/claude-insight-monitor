@@ -279,6 +279,7 @@ function renderDetail() {
   renderHistory();
   renderTrajectory();
   renderBreakdown(turn);
+  renderPrompt(turn);
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
 
   el('json-expand').onclick = () => container.querySelectorAll('.json-view details').forEach((d) => (d.open = true));
@@ -403,6 +404,109 @@ function renderStats(turn) {
         }">${v == null ? '—' : compactNum(v)}</dd>
       </div>`;
   }).join('');
+}
+
+/* --------------------------------------------------------- system prompt */
+
+/* "System prompt: 3.6K tokens" is a number you can do nothing with. Each section
+   is there because something is switched on, so sizing them separately turns the
+   number into a decision about what to turn off. */
+function renderPrompt(turn) {
+  const card = el('prompt-card');
+  const prompt = turn.prompt;
+  if (!prompt || !prompt.sections.length) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  el('prompt-sub').textContent = `${compactNum(prompt.systemTokens)} tokens · ${prompt.sections.length} sections${
+    prompt.reminderTokens ? ` · ${compactNum(prompt.reminderTokens)} in reminders` : ''
+  }`;
+
+  const ranked = [...prompt.sections].sort((a, b) => b.tokens - a.tokens);
+  el('prompt-sections').innerHTML = ranked
+    .map(
+      (section) => `
+      <div class="stat-row">
+        <div class="min-w-0 flex items-center gap-2.5">
+          <span class="text-[13.5px] font-semibold tracking-tight truncate">${escapeHtml(section.label)}</span>
+          ${
+            section.state
+              ? `<span class="font-mono text-[10px] uppercase tracking-[0.1em]" style="color:var(--warn)">${section.state}</span>`
+              : ''
+          }
+        </div>
+        <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
+          ${compactNum(section.tokens)}
+          <span class="text-dim dark:text-dim-dk">· ${Math.round(section.share * 100)}%</span>
+        </div>
+        <div class="stat-share"><span style="width:${(section.share * 100).toFixed(1)}%;background:var(--accent)"></span></div>
+      </div>`
+    )
+    .join('');
+
+  const wrap = el('prompt-reminders-wrap');
+  if (!prompt.reminders.length) {
+    wrap.hidden = true;
+  } else {
+    wrap.hidden = false;
+    el('prompt-reminders').innerHTML = prompt.reminders
+      .map(
+        (reminder) => `
+        <div class="stat-row">
+          <div class="min-w-0 flex items-center gap-2.5">
+            <span class="font-mono text-[11.5px] truncate">${escapeHtml(reminder.kind)}</span>
+            ${reminder.count > 1 ? `<span class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums">×${reminder.count}</span>` : ''}
+          </div>
+          <div class="font-mono text-[12px] tabular-nums text-right shrink-0">${compactNum(reminder.tokens)}</div>
+        </div>`
+      )
+      .join('');
+  }
+
+  renderPromptChanges();
+}
+
+/* A prompt that changes mid-session changes behaviour and invalidates the cache
+   from that point on, and it does both silently. */
+function renderPromptChanges() {
+  const changes = state.turns
+    .map((turn, index) => ({ turn, index, changed: (turn.prompt && turn.prompt.changed) || [] }))
+    .filter((x) => x.changed.length)
+    .filter((x) => {
+      const call = callOf(x.turn);
+      return !call || call.group === 'main' || call.group === 'subagent';
+    });
+
+  const foot = el('prompt-foot');
+  if (!changes.length) {
+    foot.innerHTML =
+      '<div class="font-mono text-[11px] text-dim dark:text-dim-dk">unchanged across every turn of this session</div>';
+    return;
+  }
+
+  const chips = changes
+    .slice(-14)
+    .map(
+      (x) =>
+        `<button type="button" class="ghost-btn tabular-nums" data-turn="${x.index}" title="${escapeHtml(
+          x.changed.map((c) => `${c.label} ${c.state}`).join(' · ')
+        )}">#${x.index + 1}</button>`
+    )
+    .join('');
+
+  foot.innerHTML = `
+    <div class="flex flex-col gap-3">
+      <div class="font-mono text-[11px] text-dim dark:text-dim-dk">the system prompt changed on ${
+        changes.length
+      } turn${changes.length === 1 ? '' : 's'} — each one also ends the cached prefix there</div>
+      <div class="flex flex-wrap gap-2">${chips}</div>
+    </div>`;
+
+  foot.querySelectorAll('[data-turn]').forEach((button) => {
+    button.onclick = () => selectTurn(Number(button.dataset.turn));
+  });
 }
 
 /* ------------------------------------------------------------ trajectory */
@@ -549,7 +653,7 @@ function renderCalls() {
     .map((r) => {
       const share = totalCost > 0 ? r.cost / totalCost : 0;
       return `
-      <div class="call-row">
+      <div class="stat-row">
         <div class="min-w-0 flex items-center gap-2.5">
           <span class="dot" style="background:${GROUP_COLOR[r.group] || GROUP_COLOR.background}"></span>
           <span class="text-[13.5px] font-semibold tracking-tight truncate">${escapeHtml(r.label)}</span>
@@ -565,7 +669,7 @@ function renderCalls() {
         <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums text-right shrink-0">
           ${compactNum(r.tokensIn)} in · ${compactNum(r.tokensOut)} out
         </div>
-        <div class="call-share"><span style="width:${(share * 100).toFixed(1)}%;background:${GROUP_COLOR[r.group] || GROUP_COLOR.background}"></span></div>
+        <div class="stat-share"><span style="width:${(share * 100).toFixed(1)}%;background:${GROUP_COLOR[r.group] || GROUP_COLOR.background}"></span></div>
       </div>`;
     })
     .join('');

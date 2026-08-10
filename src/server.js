@@ -10,6 +10,7 @@ const store = require('./capture-store');
 const { computeBreakdown } = require('./breakdown');
 const { analyzeTurn, walkChains, predecessorOf, chainKey, CANDIDATE_DEPTH } = require('./cache-forensics');
 const { diffHistory } = require('./history-diff');
+const { analyzePrompt } = require('./prompt-anatomy');
 const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -66,13 +67,14 @@ function handleSse(req, res) {
   });
 }
 
-function withBreakdown(turn, cache, history) {
+function withBreakdown(turn, cache, history, prompt) {
   return {
     ...turn,
     breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage),
     call: classify(turn),
     cache,
     history,
+    prompt,
   };
 }
 
@@ -87,7 +89,7 @@ function annotateLive(turn) {
     if (chainKey(history[i]) === key) candidates.unshift(history[i]);
   }
   const prev = predecessorOf(turn, candidates);
-  return withBreakdown(turn, analyzeTurn(turn, prev), diffHistory(prev, turn));
+  return withBreakdown(turn, analyzeTurn(turn, prev), diffHistory(prev, turn), analyzePrompt(turn, prev));
 }
 
 function createServer() {
@@ -125,8 +127,11 @@ function createServer() {
         const annotations = walkChains(raw, (turn, prev) => ({
           cache: analyzeTurn(turn, prev),
           history: diffHistory(prev, turn),
+          prompt: analyzePrompt(turn, prev),
         }));
-        const turns = raw.map((turn, i) => withBreakdown(turn, annotations[i].cache, annotations[i].history));
+        const turns = raw.map((turn, i) =>
+          withBreakdown(turn, annotations[i].cache, annotations[i].history, annotations[i].prompt)
+        );
         sendJson(res, 200, turns);
         return;
       }

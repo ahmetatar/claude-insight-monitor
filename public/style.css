@@ -212,18 +212,18 @@
 .meter { height: 5px; border-radius: 999px; background: var(--track); overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 999px; }
 
-/* ────────────────────────────────────────────────────── call breakdown */
+/* ─────────────────────────────────────────────────── ranked stat rows */
 
-.call-row {
+.stat-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 4px 18px;
   padding: 15px 0;
   align-items: baseline;
 }
-.call-row + .call-row { border-top: 1px solid var(--edge); }
-.call-share { grid-column: 1 / -1; height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; }
-.call-share > span { display: block; height: 100%; border-radius: 999px; }
+.stat-row + .stat-row { border-top: 1px solid var(--edge); }
+.stat-share { grid-column: 1 / -1; height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; }
+.stat-share > span { display: block; height: 100%; border-radius: 999px; }
 
 .dot { width: 7px; height: 7px; border-radius: 999px; display: inline-block; flex: none; }
 

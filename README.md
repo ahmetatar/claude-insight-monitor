@@ -140,6 +140,9 @@ key. Three safeguards:
   token space with its cache breakpoints and the exact point where it stopped
   matching the previous turn, what the turn cost, and what it would have cost
   with no cache at all. See below.
+- **Inside the system prompt** — the fixed instructions broken into the sections
+  they are made of, ranked by size, plus the `<system-reminder>` blocks injected
+  into the messages. See below.
 - **Raw JSON** — the complete captured request and response, collapsible.
 
 Token figures in the breakdown are estimates (`chars / 4`); the API only reports
@@ -173,6 +176,27 @@ Claude Code also prepends its own billing header as the first system block
 (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
 build that produced it and whether it came from the terminal (`cli`) or the
 Agent SDK (`sdk-cli`).
+
+## Inside the system prompt
+
+"System prompt: 3.6K tokens" is a number you can do nothing with. The prompt is a
+stack of independently-sourced pieces, each one present because something is
+switched on, so the proxy splits it on its own markdown headings and sizes them
+separately. In the session captured here, `Claude in Chrome browser automation`
+is 28% of the system prompt — 1K tokens, on every turn, in a session that never
+opened a browser.
+
+`<system-reminder>` blocks get their own layer. They are injected into user
+messages rather than the system prompt, so they read as conversation and are
+billed as conversation, and they are neither. That layer is where the bulky ones
+turn out to live: in the Agent SDK session captured here, the agent-type
+catalogue is 2.0K tokens and the skill catalogue 1.5K, neither of them anywhere
+near the system prompt.
+
+Sections are also compared turn to turn. A prompt that changes mid-session
+changes behaviour *and* ends the cached prefix at that point, and it does both
+silently — so any section that was added, removed, or rewritten is flagged on the
+turn it happened, and the card says plainly when nothing changed at all.
 
 ## What happened to the history
 
@@ -266,6 +290,7 @@ src/breakdown.js      per-section size estimates for a request body
 src/cache-forensics.js  chain walking, prefix diffing, and what a cache miss cost
 src/call-kinds.js     sorts each request into agent loop / subagent / background
 src/history-diff.js   what changed in the message list since the previous turn
+src/prompt-anatomy.js system prompt split into sections, plus the reminder layer
 src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)
