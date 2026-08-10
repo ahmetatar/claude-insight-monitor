@@ -140,6 +140,8 @@ key. Three safeguards:
   token space with its cache breakpoints and the exact point where it stopped
   matching the previous turn, what the turn cost, and what it would have cost
   with no cache at all. See below.
+- **Thinking** — how much of the turn's output was reasoning, the order the
+  blocks came back in, and what the signatures cost to replay. See below.
 - **Tool definitions** — every tool, what its definition costs, and how often
   the model actually called it. See below.
 - **Inside the system prompt** — the fixed instructions broken into the sections
@@ -178,6 +180,32 @@ Claude Code also prepends its own billing header as the first system block
 (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
 build that produced it and whether it came from the terminal (`cli`) or the
 Agent SDK (`sdk-cli`).
+
+## The thinking layer
+
+Thinking is billed as output but is not the answer, so a turn's output count says
+nothing about how much of it anyone reads. In the session captured here, **32% of
+all output tokens were thinking** — and adaptive thinking chose per turn, with 42
+of 73 conversation turns thinking at all and 31 answering directly.
+
+The blocks come back with an **empty `thinking` string and a long signature**:
+the raw reasoning is never returned, only a token that lets the model replay it.
+The tokens were still generated and still billed. That is visible from the wire
+twice over — in the response, and in what Claude Code echoes back on the next
+turn.
+
+The signature is the part that keeps costing. Every thinking block is replayed
+into every later request for the rest of the conversation, and by the end of this
+session 39 of them carried **59,520 characters — about 26% of the entire message
+history** — of bytes nobody can read.
+
+The response block order is shown as well, which is where interleaved thinking is
+visible: 37 turns ran `thinking → tool call`, the model reasoning between tool
+calls rather than once up front.
+
+What was *requested* — `thinking`, `output_config.effort`, task budgets — is
+reported only for captures recorded after the proxy started keeping those fields.
+Older captures say so rather than implying nothing was set.
 
 ## What the tool list costs
 
@@ -293,7 +321,7 @@ kept whole, plus the parts of the exchange that live outside them:
 | --- | --- |
 | `endpoint` | Method, path and `kind` — `messages`, or `count_tokens` for the calls Claude Code makes to size the window before it sends. |
 | `client` | `claude-cli` version parsed out of the user agent, auth type (`oauth` / `api-key`), SDK retry count, and the `x-stainless-*` runtime fingerprint. |
-| `request` | Beyond model/system/messages/tools: `thinking`, `effort`, `tool_choice`, `stop_sequences`, `metadata`, `context_management`, sampling params, and `betas` as a parsed list. |
+| `request` | Beyond model/system/messages/tools: `thinking`, `output_config` (effort, task budgets), `tool_choice`, `stop_sequences`, `metadata`, `context_management`, sampling params, and `betas` as a parsed list. |
 | `response` | Message id, content, stop reason, usage, plus `error` — including the `error` event a stream can emit *after* a 200 — and the full body for anything that isn't a plain Messages reply. |
 | `response.headers` | `request-id` for correlating with Anthropic's logs, `anthropic-ratelimit-*` for remaining quota, `retry-after` on a 429. |
 | `timing` | `ttfbMs` (time to first byte) and `durationMs`. |
@@ -319,6 +347,7 @@ src/call-kinds.js     sorts each request into agent loop / subagent / background
 src/history-diff.js   what changed in the message list since the previous turn
 src/prompt-anatomy.js system prompt split into sections, plus the reminder layer
 src/tool-economics.js what each tool definition costs against how often it is called
+src/thinking.js       thinking tokens, block order, and the cost of replaying signatures
 src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)

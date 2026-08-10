@@ -12,6 +12,7 @@ const { analyzeTurn, walkChains, predecessorOf, chainKey, CANDIDATE_DEPTH } = re
 const { diffHistory } = require('./history-diff');
 const { analyzePrompt } = require('./prompt-anatomy');
 const { analyzeTools } = require('./tool-economics');
+const { analyzeThinking } = require('./thinking');
 const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -73,6 +74,7 @@ function withBreakdown(turn, cache, history, prompt) {
     ...turn,
     breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage),
     call: classify(turn),
+    thinking: analyzeThinking(turn),
     cache,
     history,
     prompt,

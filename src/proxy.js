@@ -215,6 +215,9 @@ function captureRequestParams(body) {
     max_tokens: body.max_tokens,
     stream: body.stream,
     thinking: body.thinking ?? null,
+    // Effort and task budgets live inside output_config, not at the top level;
+    // `effort` is kept alongside for older shapes that put it there.
+    output_config: body.output_config ?? null,
     effort: body.effort ?? null,
     temperature: body.temperature ?? null,
     top_p: body.top_p ?? null,

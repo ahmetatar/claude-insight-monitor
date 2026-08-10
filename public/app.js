@@ -303,6 +303,7 @@ function renderDetail() {
   renderStats(turn);
   renderCalls();
   renderCache(turn);
+  renderThinking(turn);
   renderHistory();
   renderTrajectory();
   renderBreakdown(turn);
@@ -604,6 +605,106 @@ function renderPromptChanges() {
   foot.querySelectorAll('[data-turn]').forEach((button) => {
     button.onclick = () => selectTurn(Number(button.dataset.turn));
   });
+}
+
+/* -------------------------------------------------------------- thinking */
+
+const BLOCK_LABEL = {
+  thinking: 'thinking',
+  redacted_thinking: 'redacted thinking',
+  text: 'text',
+  tool_use: 'tool call',
+  server_tool_use: 'server tool',
+};
+
+/* Thinking is billed as output but is not the answer, so a turn's output count
+   says nothing about how much of it anyone reads. */
+function renderThinking(turn) {
+  const card = el('thinking-card');
+  const thinking = turn.thinking;
+  if (!thinking) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  const pct = Math.round(thinking.ratio * 100);
+  el('thinking-sub').textContent = thinking.outputTokens
+    ? `${compactNum(thinking.thinkingTokens)} of ${compactNum(thinking.outputTokens)} output tokens · ${pct}%`
+    : 'no output recorded';
+
+  el('thinking-shape').innerHTML = thinking.shape.length
+    ? thinking.shape
+        .map(
+          (type, i) =>
+            `${i ? '<span class="font-mono text-[11px] text-dim dark:text-dim-dk">→</span>' : ''}<span class="pill"${
+              type.includes('thinking') ? ' style="color:var(--signal);border-color:currentColor"' : ''
+            }>${escapeHtml(BLOCK_LABEL[type] || type)}</span>`
+        )
+        .join('')
+    : '<span class="font-mono text-[11px] text-dim dark:text-dim-dk">no content blocks</span>';
+
+  el('thinking-meter').style.width = `${Math.min(100, pct)}%`;
+  el('thinking-meter').style.background = 'var(--signal)';
+
+  el('thinking-note').innerHTML = thinkingNote(thinking);
+  renderThinkingFoot(thinking);
+}
+
+function thinkingNote(thinking) {
+  const lines = [];
+  if (!thinking.blocks.length) {
+    lines.push('This turn returned no thinking blocks — with adaptive thinking that is the model deciding the task did not need any.');
+  } else if (thinking.display === 'omitted') {
+    lines.push(
+      `${thinking.blocks.length} thinking block${
+        thinking.blocks.length === 1 ? '' : 's'
+      } came back with empty text: the raw reasoning is never returned, only a signature. The tokens were still generated and still billed.`
+    );
+  } else {
+    lines.push(`${thinking.blocks.length} thinking blocks came back as readable summaries.`);
+  }
+
+  const config = thinking.config;
+  if (config && config.recorded) {
+    const parts = [];
+    if (config.thinking) parts.push(`thinking: ${escapeHtml(JSON.stringify(config.thinking))}`);
+    if (config.effort) parts.push(`effort: ${escapeHtml(config.effort)}`);
+    if (config.taskBudget) parts.push(`task budget: ${escapeHtml(JSON.stringify(config.taskBudget))}`);
+    lines.push(parts.length ? `Requested with ${parts.join(' · ')}.` : 'The request asked for no thinking configuration.');
+  } else {
+    lines.push('This capture predates recording the thinking and effort parameters, so what was requested is unknown.');
+  }
+  return lines.join(' ');
+}
+
+/* Signatures are the part that keeps costing after the turn ends: every thinking
+   block is replayed into every later request, and the signature is all of it. */
+function renderThinkingFoot(thinking) {
+  const chain = state.turns.filter((t) => !isSideChain(t) && t.thinking);
+  const thought = chain.filter((t) => t.thinking.thinkingTokens > 0).length;
+  const thinkingTokens = chain.reduce((sum, t) => sum + t.thinking.thinkingTokens, 0);
+  const outputTokens = chain.reduce((sum, t) => sum + t.thinking.outputTokens, 0);
+
+  const lines = [];
+  if (chain.length) {
+    lines.push(
+      `${thought} of ${chain.length} conversation turns thought · ${compactNum(thinkingTokens)} of ${compactNum(
+        outputTokens
+      )} output tokens (${outputTokens ? Math.round((thinkingTokens / outputTokens) * 100) : 0}%)`
+    );
+  }
+  if (thinking.echoedBlocks) {
+    lines.push(
+      `${thinking.echoedBlocks} thinking blocks are replayed in this request, carrying ≈${compactNum(
+        thinking.echoedSignatureTokens
+      )} tokens of signature nobody can read`
+    );
+  }
+
+  el('thinking-foot').innerHTML = lines
+    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .join('');
 }
 
 /* ------------------------------------------------------------ trajectory */
