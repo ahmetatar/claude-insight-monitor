@@ -12,6 +12,7 @@ const { analyzeTurn, walkChains, predecessorOf, chainKey, CANDIDATE_DEPTH } = re
 const { diffHistory } = require('./history-diff');
 const { analyzePrompt } = require('./prompt-anatomy');
 const { analyzeTools } = require('./tool-economics');
+const { analyzeTopology } = require('./topology');
 const { analyzeThinking } = require('./thinking');
 const { analyzeNetwork } = require('./network');
 const credentials = require('./credentials');
@@ -191,6 +192,13 @@ function createServer() {
       if (toolsMatch) {
         const sessionId = decodeURIComponent(toolsMatch[1]);
         sendJson(res, 200, analyzeTools(store.getTurns(sessionId)));
+        return;
+      }
+
+      const topologyMatch = req.method === 'GET' && req.url.match(/^\/api\/sessions\/([^/]+)\/topology$/);
+      if (topologyMatch) {
+        const sessionId = decodeURIComponent(topologyMatch[1]);
+        sendJson(res, 200, analyzeTopology(store.getTurns(sessionId)));
         return;
       }
 

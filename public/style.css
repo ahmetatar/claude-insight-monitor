@@ -223,6 +223,13 @@
 }
 .stat-row + .stat-row { border-top: 1px solid var(--edge); }
 .stat-share { grid-column: 1 / -1; height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; }
+
+/* A row that navigates: same grid, none of the button chrome. */
+button.stat-row {
+  background: transparent; border: 0; width: 100%;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent) 18%, var(--track)); }
 .stat-share > span { display: block; height: 100%; border-radius: 999px; }
 
 .dot { width: 7px; height: 7px; border-radius: 999px; display: inline-block; flex: none; }

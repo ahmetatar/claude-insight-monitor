@@ -45,9 +45,10 @@ const state = {
   measurements: {},
   measuring: null,
   measureError: null,
-  /* Session-wide tool statistics, fetched separately: one fact about the whole
-     session rather than something that belongs on every turn. */
+  /* Session-wide statistics, fetched separately: facts about the whole session
+     rather than things that belong on every turn. */
   tools: null,
+  topology: null,
 };
 
 let historyChart = null;
@@ -143,25 +144,34 @@ let toolRefreshTimer = null;
 function scheduleToolRefresh(sessionId) {
   clearTimeout(toolRefreshTimer);
   toolRefreshTimer = setTimeout(async () => {
-    await loadTools(sessionId);
-    if (state.sessionId === sessionId) renderTools();
+    await loadSessionStats(sessionId);
+    if (state.sessionId === sessionId) {
+      renderTools();
+      renderThreads();
+    }
   }, 2000);
 }
 
-async function loadTools(sessionId) {
-  try {
-    state.tools = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/tools`);
-  } catch {
-    state.tools = null; // the card simply stays hidden
-  }
+async function loadSessionStats(sessionId) {
+  const [tools, topology] = await Promise.all([
+    fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/tools`).catch(() => null),
+    fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/topology`).catch(() => null),
+  ]);
+  // A failed fetch simply leaves its card hidden.
+  state.tools = tools;
+  state.topology = topology;
 }
 
 async function selectSession(sessionId) {
   state.sessionId = sessionId;
   state.tools = null;
+  state.topology = null;
   state.turns = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/turns`);
-  loadTools(sessionId).then(() => {
-    if (state.sessionId === sessionId) renderTools();
+  loadSessionStats(sessionId).then(() => {
+    if (state.sessionId === sessionId) {
+      renderTools();
+      renderThreads();
+    }
   });
   state.turnIndex = state.turns.length - 1;
   state.pinned = false;
@@ -315,6 +325,7 @@ function renderDetail() {
   renderTrajectory();
   renderBreakdown(turn);
   renderTools();
+  renderThreads();
   renderPrompt(turn);
   renderMeasure();
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
@@ -613,6 +624,87 @@ function renderPromptChanges() {
   foot.querySelectorAll('[data-turn]').forEach((button) => {
     button.onclick = () => selectTurn(Number(button.dataset.turn));
   });
+}
+
+/* --------------------------------------------------------------- threads */
+
+/* A subagent is a whole conversation of its own — its own window, its own tool
+   set, its own bill — that exists to hand a few hundred tokens back to the
+   conversation that spawned it. Turn by turn that is invisible. */
+function renderThreads() {
+  const card = el('threads-card');
+  const data = state.topology;
+  /* A session with one thread is just a conversation; the card would be a
+     one-row restatement of everything else on the page. */
+  if (!data || data.threads.length < 2) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  const { totals } = data;
+  el('threads-sub').textContent = `${totals.threads} threads · ${totals.subagents} subagent${
+    totals.subagents === 1 ? '' : 's'
+  }`;
+
+  const max = Math.max(1, ...data.threads.map((t) => t.billedTokens));
+  el('threads-rows').innerHTML = data.threads
+    .map((thread) => {
+      // Show the id whole and let the cell truncate it — a fixed slice cuts
+      // exactly where agent ids differ from each other.
+      const label = thread.kind === 'conversation' ? 'the conversation' : `subagent ${thread.id}`;
+      const spawn = thread.spawn
+        ? `spawned by ${escapeHtml(thread.spawn.toolName)} at turn #${thread.spawn.turnIndex + 1}${
+            thread.spawn.reportTokens != null ? ` · reported back ${compactNum(thread.spawn.reportTokens)} tokens` : ''
+          }`
+        : thread.kind === 'subagent'
+        ? 'no spawning call found before it started'
+        : `${thread.toolCount} tools · peak ${compactNum(thread.peakContextTokens)} context tokens`;
+
+      return `
+      <button type="button" class="stat-row text-left w-full" data-turn="${thread.firstTurnIndex}">
+        <div class="min-w-0 flex items-center gap-2.5">
+          <span class="dot" style="background:${
+            thread.kind === 'subagent' ? 'var(--signal)' : 'var(--accent)'
+          }"></span>
+          <span class="text-[13.5px] font-semibold tracking-tight truncate">${escapeHtml(label)}</span>
+          <span class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums shrink-0">${thread.turns} turn${
+            thread.turns === 1 ? '' : 's'
+          }</span>
+        </div>
+        <div class="font-mono text-[12px] tabular-nums text-right shrink-0">${money(thread.cost)}</div>
+        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk truncate">${spawn}</div>
+        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums text-right shrink-0">${compactNum(
+          thread.billedTokens
+        )} in · ${compactNum(thread.outputTokens)} out</div>
+        <div class="stat-share"><span style="width:${((thread.billedTokens / max) * 100).toFixed(1)}%;background:${
+          thread.kind === 'subagent' ? 'var(--signal)' : 'var(--accent)'
+        }"></span></div>
+      </button>`;
+    })
+    .join('');
+
+  el('threads-rows')
+    .querySelectorAll('[data-turn]')
+    .forEach((button) => {
+      button.onclick = () => selectTurn(Number(button.dataset.turn));
+    });
+
+  const lines = [];
+  if (totals.subagents) {
+    const ratio = totals.reportedTokens > 0 ? Math.round(totals.subagentBilledTokens / totals.reportedTokens) : null;
+    lines.push(
+      `subagents spent ${compactNum(totals.subagentBilledTokens)} tokens (${money(totals.subagentCost)}, ${
+        totals.totalCost > 0 ? Math.round((totals.subagentCost / totals.totalCost) * 100) : 0
+      }% of the session) to report back ${compactNum(totals.reportedTokens)}${
+        ratio ? ` — ${ratio}× what the conversation ever saw` : ''
+      }`
+    );
+  }
+  lines.push('which call spawned which thread is inferred from ordering, not stated on the wire');
+  el('threads-foot').innerHTML = lines
+    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .join('');
 }
 
 /* --------------------------------------------------------- exact counting */

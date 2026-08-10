@@ -140,6 +140,9 @@ key. Three safeguards:
   token space with its cache breakpoints and the exact point where it stopped
   matching the previous turn, what the turn cost, and what it would have cost
   with no cache at all. See below.
+- **Threads** — the session split into the conversation and each subagent, with
+  what each one spent and what it handed back. Hidden when there is only one
+  thread. See below.
 - **Over the wire** — how long the model took to start, how fast it spoke once
   it did, whether the SDK retried first, and the account's remaining quota. See
   below.
@@ -185,6 +188,27 @@ Claude Code also prepends its own billing header as the first system block
 (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
 build that produced it and whether it came from the terminal (`cli`) or the
 Agent SDK (`sdk-cli`).
+
+## Threads
+
+A subagent is a whole conversation of its own — its own context window, its own
+tool set, its own bill — that exists to hand a few hundred tokens back to the
+conversation that spawned it. Turn by turn that is invisible: its turns are
+interleaved with everything else and its cost lands in the session total with
+nothing to attribute it to.
+
+Threads are grouped by the `x-claude-code-agent-id` header, which is fact. Which
+tool call spawned which thread is **inferred** from ordering — the closest
+`Agent` / `Task` / `Workflow` call already made when the thread's first turn
+arrived — and the card says so rather than presenting it as read from the wire.
+
+The number worth having is the ratio. In a session driven through the proxy for
+testing, two subagents spent 80.7K tokens and $0.083 — 69% of the session — to
+report back 18 tokens between them. That is the shape of the trade: a large
+private context producing a small public answer.
+
+Clicking a thread jumps to its first turn, where the cache card shows it starting
+cold: a subagent's prefix has nothing in common with the conversation's.
 
 ## Measuring instead of estimating
 
@@ -404,6 +428,7 @@ src/call-kinds.js     sorts each request into agent loop / subagent / background
 src/history-diff.js   what changed in the message list since the previous turn
 src/prompt-anatomy.js system prompt split into sections, plus the reminder layer
 src/tool-economics.js what each tool definition costs against how often it is called
+src/topology.js       the session split into conversation and subagent threads
 src/thinking.js       thinking tokens, block order, and the cost of replaying signatures
 src/network.js        latency split, retries, failures, and rate-limit budget
 src/token-count.js    exact section sizes via four count_tokens calls
