@@ -271,6 +271,7 @@ function renderDetail() {
   renderRibbon();
   renderGauge(turn);
   renderStats(turn);
+  renderCache(turn);
   renderHistory();
   renderBreakdown(turn);
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
@@ -388,6 +389,149 @@ function renderStats(turn) {
         }">${v == null ? '—' : compactNum(v)}</dd>
       </div>`;
   }).join('');
+}
+
+/* ----------------------------------------------------------------- cache */
+
+const VERDICT_LABEL = { hit: 'prefix hit', partial: 'partial hit', miss: 'miss', cold: 'cold start' };
+
+function money(v) {
+  if (v == null) return '—';
+  if (v >= 1) return `$${v.toFixed(2)}`;
+  if (v >= 0.01) return `$${v.toFixed(3)}`;
+  return `$${v.toFixed(4)}`;
+}
+
+function duration(ms) {
+  if (ms == null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  return `${(ms / 3_600_000).toFixed(1)}h`;
+}
+
+/* The usage numbers say what the cache did; this says why. A rewrite caused by a
+   changed block is something you can go and fix, an expired TTL is not, and the
+   two are indistinguishable from the token counts alone. */
+function cacheExplanation(c) {
+  const cause = c.cause;
+  if (c.verdict === 'cold') return 'First turn of this conversation — there was no prefix to reuse yet.';
+  if (c.verdict === 'hit') {
+    return c.divergence
+      ? 'Everything the previous turn had cached was byte-identical. The only difference is past the last breakpoint, which was never cached.'
+      : 'The whole prefix matched the previous turn, byte for byte.';
+  }
+  if (!cause) return '';
+  if (cause.type === 'ttl-expiry') {
+    return `Nothing was reused, and the prefix had not changed — ${duration(c.elapsedMs)} idle since the previous turn, past the ${cause.ttl} TTL.`;
+  }
+  if (cause.type === 'prefix-drift') {
+    const what = c.divergence && c.divergence.reason === 'removed'
+      ? `<b class="font-semibold">${escapeHtml(cause.unit || '')}</b> was dropped from the history`
+      : `<b class="font-semibold">${escapeHtml(cause.unit || '')}</b> changed`;
+    return `${what}, inside the region the previous turn had cached. Roughly <b class="font-semibold tabular-nums">${compactNum(cause.tokensInvalidated)}</b> cached tokens had to be written again.`;
+  }
+  return 'Nothing was reused, and the prefix is unchanged — the entry was evicted upstream.';
+}
+
+function renderCache(turn) {
+  const card = el('cache-card');
+  const c = turn.cache;
+  if (!c) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  const ttl = c.ttl ? `${c.ttl} TTL` : 'no breakpoints';
+  el('cache-sub').textContent = `${c.breakpoints.length} breakpoint${c.breakpoints.length === 1 ? '' : 's'} · ${ttl}`;
+
+  el('cache-verdict').innerHTML = `
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="verdict" data-v="${c.verdict}">${escapeHtml(VERDICT_LABEL[c.verdict] || c.verdict)}</span>
+      ${c.elapsedMs != null ? `<span class="pill">${duration(c.elapsedMs)} since previous turn</span>` : ''}
+    </div>
+    <p class="text-[13px] leading-relaxed text-dim dark:text-dim-dk max-w-[74ch]">${cacheExplanation(c)}</p>`;
+
+  renderCacheStrip(turn, c);
+  renderCacheCost(c);
+  renderCacheSession();
+}
+
+/* The prefix drawn in token space — how far the cached region reached, where the
+   breakpoints sat, and where the first difference landed relative to them. */
+function renderCacheStrip(turn, c) {
+  const total = Math.max(1, c.approxTokens || (turn.breakdown && turn.breakdown.totalApproxTokens) || 1);
+  const pct = (t) => `${Math.min(100, Math.max(0, (t / total) * 100))}%`;
+  const cachedUpTo = c.breakpoints.length ? c.breakpoints[c.breakpoints.length - 1].approxTokensUpTo : 0;
+
+  const marks = c.breakpoints
+    .map((b) => `<span class="cache-tick" style="left:${pct(b.approxTokensUpTo)}" title="breakpoint · ${escapeHtml(b.label)} · ${compactNum(b.approxTokensUpTo)} tokens in"></span>`)
+    .join('');
+  const breakMark =
+    c.divergence && c.divergence.invalidating
+      ? `<span class="cache-break" style="left:${pct(c.divergence.tokensBefore || 0)}" title="first difference · ${escapeHtml(c.divergence.label)}"></span>`
+      : '';
+
+  el('cache-strip').innerHTML =
+    `<span class="cache-fill" style="width:${pct(cachedUpTo)}"></span>${marks}${breakMark}`;
+
+  const dot = (color, text) =>
+    `<span class="flex items-center gap-2 font-mono text-[10.5px] text-dim dark:text-dim-dk"><span class="w-1.5 h-1.5 rounded-full inline-block" style="background:${color}"></span>${text}</span>`;
+  el('cache-strip-legend').innerHTML = [
+    dot('color-mix(in srgb, var(--accent) 45%, transparent)', `cached prefix ≈${compactNum(cachedUpTo)} of ${compactNum(total)} tokens`),
+    c.breakpoints.length ? dot('var(--accent)', `${c.breakpoints.length} breakpoint${c.breakpoints.length === 1 ? '' : 's'}`) : '',
+    c.divergence && c.divergence.invalidating
+      ? dot('var(--danger)', `first difference at ${escapeHtml(c.divergence.label)}`)
+      : '',
+  ]
+    .filter(Boolean)
+    .join('');
+}
+
+function renderCacheCost(c) {
+  const cost = c.cost;
+  const cells = [
+    ['this turn', cost ? money(cost.actual) : '—', null],
+    ['if nothing cached', cost ? money(cost.withoutCache) : '—', 'every cached token re-sent at full input price'],
+    ['saved', cost ? `${Math.round(cost.savedPct * 100)}%` : '—', cost ? money(cost.saved) : null],
+    ['written / read', `${compactNum(c.usage.write)} / ${compactNum(c.usage.read)}`, c.usage.write1h ? `${compactNum(c.usage.write1h)} at 1h TTL` : null],
+  ];
+  el('cache-cost').innerHTML = cells
+    .map(
+      ([label, value, sub]) => `
+      <div class="min-w-0">
+        <dt class="font-mono text-[10px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</dt>
+        <dd class="m-0 mt-2.5 text-[26px] font-semibold tracking-[-0.035em] tabular-nums leading-none">${value}</dd>
+        ${sub ? `<div class="mt-2 font-mono text-[10.5px] text-dim dark:text-dim-dk">${escapeHtml(sub)}</div>` : ''}
+      </div>`
+    )
+    .join('');
+}
+
+/* Per-turn cache behaviour only reads as good or bad against the session it sits
+   in: one big write is the price of admission, twenty of them is a leak. */
+function renderCacheSession() {
+  const analysed = state.turns.map((t) => t.cache).filter(Boolean);
+  const tally = analysed.reduce((acc, c) => {
+    acc[c.verdict] = (acc[c.verdict] || 0) + 1;
+    return acc;
+  }, {});
+  const actual = analysed.reduce((sum, c) => sum + (c.cost ? c.cost.actual : 0), 0);
+  const uncached = analysed.reduce((sum, c) => sum + (c.cost ? c.cost.withoutCache : 0), 0);
+  const rewritten = analysed.reduce((sum, c) => sum + (c.cause && c.cause.tokensInvalidated ? c.cause.tokensInvalidated : 0), 0);
+
+  const counts = ['hit', 'partial', 'miss', 'cold']
+    .filter((v) => tally[v])
+    .map((v) => `${tally[v]} ${VERDICT_LABEL[v]}`)
+    .join(' · ');
+
+  el('cache-session').innerHTML = `
+    <div class="flex flex-wrap items-baseline gap-x-7 gap-y-2 font-mono text-[11px] text-dim dark:text-dim-dk">
+      <span>session ${counts || '—'}</span>
+      <span>${money(actual)} spent, ${money(uncached)} without cache</span>
+      ${rewritten ? `<span>≈${compactNum(rewritten)} tokens rewritten after a prefix change</span>` : ''}
+    </div>`;
 }
 
 /* ---------------------------------------------------------- history chart */

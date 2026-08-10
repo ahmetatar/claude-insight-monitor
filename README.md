@@ -130,12 +130,51 @@ key. Three safeguards:
   (type, required, docs) and raw JSON schema; a message's content blocks with
   their types, cache markers and per-block token counts. Every block has a copy
   button. `Esc` closes it.
+- **Cache** — why the prompt cache behaved the way it did on this turn. A
+  verdict (prefix hit / partial hit / miss / cold start), the prefix drawn in
+  token space with its cache breakpoints and the exact point where it stopped
+  matching the previous turn, what the turn cost, and what it would have cost
+  with no cache at all. See below.
 - **Raw JSON** — the complete captured request and response, collapsible.
 
 Token figures in the breakdown are estimates (`chars / 4`); the API only reports
 usage in aggregate. The four numbers under the ring are the real ones.
 
 ---
+
+## Cache forensics
+
+`usage` tells you a turn re-wrote 40K tokens; it never tells you why, and "why"
+is the half you can act on. The proxy reconstructs the prefix the API actually
+matches on — tools, then system, then messages, one unit per content block —
+hashes each unit, and compares it against the previous turn of the same
+conversation. The first unit whose bytes differ is where the cache stopped being
+reusable.
+
+Only a difference *before* the last cache breakpoint costs anything; past it the
+bytes were never cached, so a changed tail is just the conversation moving on.
+That distinction is what separates a real miss from normal growth:
+
+| Verdict | Meaning |
+| --- | --- |
+| prefix hit | Everything the previous turn had cached was byte-identical. |
+| partial hit | Something inside the cached region changed; the tokens after it had to be written again. |
+| miss | Nothing was reused. Attributed to a prefix change, an expired TTL, or — when the prefix is unchanged and the TTL is not up — eviction upstream. |
+| cold start | First turn of this conversation; there was nothing to reuse. |
+
+Costs use Anthropic's list prices with the cache multipliers (writes 1.25x at the
+5-minute TTL, 2x at the hour, reads 0.1x), alongside the counterfactual: the same
+turn with every cached token re-sent at full price. A large `cache_creation`
+number is only wasteful if nothing reads it, and that comparison is the only
+honest way to see which it was.
+
+One session id carries several conversations — the agent loop, subagents, and
+short utility calls that ship no tools. Each is compared only against its own
+history; among recent turns, the predecessor is the one sharing the longest
+prefix.
+
+Prices are a cached table. A model that isn't in it shows no cost rather than a
+wrong one.
 
 ## What a capture records
 
@@ -167,6 +206,8 @@ src/proxy.js          forwards to api.anthropic.com and records each exchange
 src/server.js         static files + /api/sessions, /api/events (SSE), /api/health
 src/capture-store.js  append-only JSONL store, one file per session
 src/breakdown.js      per-section size estimates for a request body
+src/cache-forensics.js  prefix diffing: what broke the cache, and what it cost
+src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)
 ```

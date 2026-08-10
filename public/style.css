@@ -11,6 +11,7 @@
   --ribbon: rgba(244, 244, 247, 0.86);
   --track: rgba(20, 21, 26, 0.07);
   --danger: #C0392B;
+  --warn: #A5701A;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -23,6 +24,7 @@
     --ribbon: rgba(8, 9, 12, 0.84);
     --track: rgba(239, 238, 244, 0.09);
     --danger: #E5705F;
+    --warn: #D9A24A;
   }
 }
 
@@ -209,6 +211,43 @@
 
 .meter { height: 5px; border-radius: 999px; background: var(--track); overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 999px; }
+
+/* ───────────────────────────────────────────────────── cache forensics */
+
+/* The prefix laid out in token space: how much of it the cache held, and where
+   the first byte-level difference from the previous turn fell. */
+.cache-strip {
+  position: relative; height: 20px; border-radius: 999px;
+  background: var(--track); overflow: visible;
+}
+.cache-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.cache-tick {
+  position: absolute; top: -3px; bottom: -3px; width: 1.5px;
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
+  border-radius: 999px;
+}
+.cache-break { position: absolute; top: -6px; bottom: -6px; width: 2px; background: var(--danger); border-radius: 999px; }
+.cache-break::after {
+  content: ""; position: absolute; left: -3px; top: -3px;
+  width: 8px; height: 8px; border-radius: 999px; background: var(--danger);
+}
+
+.verdict {
+  display: inline-flex; align-items: center; gap: 7px;
+  border-radius: 999px; padding: 5px 12px;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.verdict[data-v="hit"] { color: var(--signal); }
+.verdict[data-v="partial"] { color: var(--warn); }
+.verdict[data-v="miss"] { color: var(--danger); }
+.verdict[data-v="cold"] { color: var(--dim); }
 
 /* ─────────────────────────────────────────────────────────────── cards */
 

@@ -8,6 +8,7 @@ const { EventEmitter } = require('events');
 const { handleProxyRequest } = require('./proxy');
 const store = require('./capture-store');
 const { computeBreakdown } = require('./breakdown');
+const { analyzeTurn, analyzeSession, chainKey, CANDIDATE_DEPTH } = require('./cache-forensics');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MIME = {
@@ -63,8 +64,25 @@ function handleSse(req, res) {
   });
 }
 
-function withBreakdown(turn) {
-  return { ...turn, breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage) };
+function withBreakdown(turn, cache) {
+  return {
+    ...turn,
+    breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage),
+    cache,
+  };
+}
+
+/* Cache analysis is comparative: a turn only means something next to the previous
+   turn of its own chain. Live captures arrive one at a time, so the predecessor is
+   looked up from the store rather than carried in the event. */
+function annotateLive(turn) {
+  const history = store.getTurns(turn.sessionId);
+  const key = chainKey(turn);
+  const candidates = [];
+  for (let i = history.length - 2; i >= 0 && candidates.length < CANDIDATE_DEPTH; i--) {
+    if (chainKey(history[i]) === key) candidates.unshift(history[i]);
+  }
+  return withBreakdown(turn, analyzeTurn(turn, candidates));
 }
 
 function createServer() {
@@ -74,7 +92,7 @@ function createServer() {
         await handleProxyRequest(req, res, {
           onCapture: (turn) => {
             store.appendTurn(turn.sessionId, turn);
-            bus.emit('turn', withBreakdown(turn));
+            bus.emit('turn', annotateLive(turn));
           },
         });
         return;
@@ -98,7 +116,9 @@ function createServer() {
       const sessionTurnsMatch = req.method === 'GET' && req.url.match(/^\/api\/sessions\/([^/]+)\/turns$/);
       if (sessionTurnsMatch) {
         const sessionId = decodeURIComponent(sessionTurnsMatch[1]);
-        const turns = store.getTurns(sessionId).map(withBreakdown);
+        const raw = store.getTurns(sessionId);
+        const cache = analyzeSession(raw);
+        const turns = raw.map((turn, i) => withBreakdown(turn, cache[i]));
         sendJson(res, 200, turns);
         return;
       }
