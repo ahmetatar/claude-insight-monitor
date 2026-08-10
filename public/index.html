@@ -185,6 +185,22 @@
           <div class="card-foot" id="cache-session"></div>
         </section>
 
+        <!-- network --------------------------------------------------- -->
+        <section class="card min-w-0" id="network-card">
+          <div class="card-head">
+            <h3>Over the wire</h3>
+            <span class="font-mono text-[11px] text-dim dark:text-dim-dk" id="network-sub"></span>
+          </div>
+          <div class="card-body flex flex-col gap-8">
+            <dl id="network-stats" class="grid grid-cols-2 sm:grid-cols-4 gap-y-8 gap-x-5 divide-cells"></dl>
+            <div class="min-w-0" id="network-limits-wrap">
+              <div class="label-eyebrow mb-4">Rate limit budget</div>
+              <div id="network-limits" class="flex flex-col"></div>
+            </div>
+          </div>
+          <div class="card-foot" id="network-foot"></div>
+        </section>
+
         <!-- thinking -------------------------------------------------- -->
         <section class="card min-w-0" id="thinking-card">
           <div class="card-head">

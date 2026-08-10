@@ -304,6 +304,7 @@ function renderDetail() {
   renderCalls();
   renderCache(turn);
   renderThinking(turn);
+  renderNetwork(turn);
   renderHistory();
   renderTrajectory();
   renderBreakdown(turn);
@@ -605,6 +606,141 @@ function renderPromptChanges() {
   foot.querySelectorAll('[data-turn]').forEach((button) => {
     button.onclick = () => selectTurn(Number(button.dataset.turn));
   });
+}
+
+/* --------------------------------------------------------------- network */
+
+function ms(value) {
+  if (value == null) return '—';
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return `${(value / 1000).toFixed(value < 10_000 ? 2 : 1)}s`;
+}
+
+function bytes(value) {
+  if (value == null) return '—';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/* Latency splits in two and the halves mean different things: the wait before
+   the first byte is queueing and prompt processing, everything after it is
+   generation. Averaged together, a slow queue reads as a slow model. */
+function renderNetwork(turn) {
+  const card = el('network-card');
+  const net = turn.network;
+  if (!net || !net.recorded) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  el('network-sub').textContent = [
+    net.status ? `HTTP ${net.status}` : null,
+    net.requestId ? net.requestId : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const cells = [
+    ['time to first byte', ms(net.ttfbMs), 'queue + prompt'],
+    ['generating', ms(net.streamMs), net.tokensPerSecond ? `${net.tokensPerSecond.toFixed(1)} tok/s` : null],
+    ['total', ms(net.durationMs), null],
+    ['on the wire', bytes(net.bytes && net.bytes.request), net.bytes ? `${bytes(net.bytes.response)} back` : null],
+  ];
+  el('network-stats').innerHTML = cells
+    .map(
+      ([label, value, sub]) => `
+      <div class="min-w-0">
+        <dt class="font-mono text-[10px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</dt>
+        <dd class="m-0 mt-2.5 text-[26px] font-semibold tracking-[-0.035em] tabular-nums leading-none">${escapeHtml(value)}</dd>
+        ${sub ? `<div class="mt-2 font-mono text-[10.5px] text-dim dark:text-dim-dk">${escapeHtml(sub)}</div>` : ''}
+      </div>`
+    )
+    .join('');
+
+  renderRateLimits(net);
+  renderNetworkFoot(net);
+}
+
+function renderRateLimits(net) {
+  const wrap = el('network-limits-wrap');
+  if (!net.rateLimits.length) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+
+  el('network-limits').innerHTML = net.rateLimits
+    .map((row) => {
+      const share = row.share == null ? null : Math.max(0, Math.min(1, row.share));
+      const colour = share == null || share > 0.3 ? 'var(--signal)' : share > 0.1 ? 'var(--warn)' : 'var(--danger)';
+      return `
+      <div class="stat-row">
+        <div class="min-w-0 flex items-center gap-2.5">
+          <span class="font-mono text-[12px] truncate">${escapeHtml(row.resource)}</span>
+          ${row.status ? `<span class="font-mono text-[10.5px] text-dim dark:text-dim-dk">${escapeHtml(row.status)}</span>` : ''}
+        </div>
+        <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
+          ${row.remaining != null ? escapeHtml(String(row.remaining)) : '—'}${
+            row.limit != null ? `<span class="text-dim dark:text-dim-dk"> / ${escapeHtml(String(row.limit))}</span>` : ''
+          }
+        </div>
+        ${
+          share == null
+            ? ''
+            : `<div class="stat-share"><span style="width:${(share * 100).toFixed(1)}%;background:${colour}"></span></div>`
+        }
+        ${
+          row.reset
+            ? `<div class="font-mono text-[10.5px] text-dim dark:text-dim-dk">resets ${escapeHtml(String(row.reset))}</div>`
+            : ''
+        }
+      </div>`;
+    })
+    .join('');
+}
+
+function renderNetworkFoot(net) {
+  const measured = state.turns.filter((t) => t.network && t.network.recorded);
+  const lines = [];
+
+  const ttfbs = measured.map((t) => t.network.ttfbMs).filter((v) => v != null).sort((a, b) => a - b);
+  const rates = measured.map((t) => t.network.tokensPerSecond).filter((v) => v).sort((a, b) => a - b);
+  if (ttfbs.length) {
+    const median = ttfbs[Math.floor(ttfbs.length / 2)];
+    const slowest = ttfbs[ttfbs.length - 1];
+    lines.push(
+      `${measured.length} measured turns · median first byte ${ms(median)} · slowest ${ms(slowest)}${
+        rates.length ? ` · median ${rates[Math.floor(rates.length / 2)].toFixed(1)} tok/s` : ''
+      }`
+    );
+  }
+
+  /* A retry the SDK handled is invisible everywhere else: the request succeeded,
+     so nothing surfaces except a count on a header. */
+  const retried = measured.filter((t) => t.network.retryCount > 0);
+  const failed = state.turns.filter((t) => t.status && t.status >= 400);
+  if (retried.length || failed.length) {
+    const parts = [];
+    if (retried.length)
+      parts.push(`${retried.length} turn${retried.length === 1 ? '' : 's'} arrived after an SDK retry`);
+    if (failed.length) {
+      const codes = [...new Set(failed.map((t) => t.status))].sort();
+      parts.push(`${failed.length} failed (HTTP ${codes.join(', ')})`);
+    }
+    lines.push(parts.join(' · '));
+  } else if (measured.length) {
+    lines.push('no retries and no failed requests in this session');
+  }
+
+  if (net.error) {
+    lines.push(`this turn: ${escapeHtml(net.error.type || 'error')}${net.retryAfter ? ` · retry after ${escapeHtml(String(net.retryAfter))}s` : ''}`);
+  }
+
+  el('network-foot').innerHTML = lines
+    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .join('');
 }
 
 /* -------------------------------------------------------------- thinking */

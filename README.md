@@ -140,6 +140,9 @@ key. Three safeguards:
   token space with its cache breakpoints and the exact point where it stopped
   matching the previous turn, what the turn cost, and what it would have cost
   with no cache at all. See below.
+- **Over the wire** — how long the model took to start, how fast it spoke once
+  it did, whether the SDK retried first, and the account's remaining quota. See
+  below.
 - **Thinking** — how much of the turn's output was reasoning, the order the
   blocks came back in, and what the signatures cost to replay. See below.
 - **Tool definitions** — every tool, what its definition costs, and how often
@@ -180,6 +183,26 @@ Claude Code also prepends its own billing header as the first system block
 (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
 build that produced it and whether it came from the terminal (`cli`) or the
 Agent SDK (`sdk-cli`).
+
+## Over the wire
+
+Latency splits in two and the halves mean different things: the wait before the
+first byte is queueing and prompt processing, everything after it is generation.
+Averaged together, a slow queue reads as a slow model — so they are reported
+separately, with tokens per second measured against the generating half only.
+
+Alongside them, three things that are otherwise invisible:
+
+- **Silent retries.** `x-stainless-retry-count` is the only place a retry the SDK
+  already handled shows up. The request succeeded, so nothing else surfaces.
+- **Failures with their reason.** A 429 carries its error body and `retry-after`;
+  a stream that fails after a 200 carries the error event that ended it.
+- **Remaining quota.** The `anthropic-ratelimit-*` headers, parsed by shape
+  rather than from a fixed list, so a limit type that did not exist when this was
+  written still appears.
+
+These fields only exist in captures recorded after the proxy started keeping
+them, so the card hides itself on older ones rather than showing zeroes.
 
 ## The thinking layer
 
@@ -348,6 +371,7 @@ src/history-diff.js   what changed in the message list since the previous turn
 src/prompt-anatomy.js system prompt split into sections, plus the reminder layer
 src/tool-economics.js what each tool definition costs against how often it is called
 src/thinking.js       thinking tokens, block order, and the cost of replaying signatures
+src/network.js        latency split, retries, failures, and rate-limit budget
 src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)

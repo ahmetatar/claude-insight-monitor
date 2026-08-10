@@ -13,6 +13,7 @@ const { diffHistory } = require('./history-diff');
 const { analyzePrompt } = require('./prompt-anatomy');
 const { analyzeTools } = require('./tool-economics');
 const { analyzeThinking } = require('./thinking');
+const { analyzeNetwork } = require('./network');
 const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -75,6 +76,7 @@ function withBreakdown(turn, cache, history, prompt) {
     breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage),
     call: classify(turn),
     thinking: analyzeThinking(turn),
+    network: analyzeNetwork(turn),
     cache,
     history,
     prompt,
