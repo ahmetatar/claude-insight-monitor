@@ -1,8 +1,9 @@
 # claude-cxt-dump
 
 A local proxy that sits between Claude Code and the Anthropic API, records every
-request, and shows you exactly what was in the context window — system prompt,
-messages, tool definitions, and the real token usage the API reported back.
+request, and then explains it: what was in the context window, why the cache
+behaved the way it did, which of those requests were not the conversation at all,
+and what each part of it cost.
 
 Nothing is sent anywhere. The proxy forwards to the real API and keeps a copy on
 disk under `~/.cxt-proxy/captures/`.
@@ -79,6 +80,7 @@ down. If `settings.json` already holds an `ANTHROPIC_BASE_URL` you set yourself,
 | `CXT_PROXY_HOME` | Where the pid file, log and captures live. Default `~/.cxt-proxy`. Set it per project if you want separate stores. |
 | `CXT_PROXY_PORT` | Port for the proxy process itself; normally set for you by the CLI. |
 | `CXT_PROXY_HOST` | Bind address. Default `127.0.0.1` — set `0.0.0.0` only if you deliberately want it reachable from the network. |
+| `ANTHROPIC_API_KEY` | Optional, and only used by **Measure exactly**. When set, the proxy never reuses Claude Code's own credential for it. |
 
 ---
 
@@ -112,330 +114,419 @@ key. Three safeguards:
 
 ---
 
-## The UI
+# Part I — The UI
 
-<http://localhost:8787> — one page, live over SSE.
+<http://localhost:8787> — one page, live over SSE. A card with nothing to say for
+a given turn hides itself rather than showing zeroes.
 
-- **Sessions rail** — every captured session, newest first.
+### Always on screen
+
+- **Sessions rail** — every captured session, newest first. Deleting one takes
+  two clicks, so a stray click can never drop a capture.
 - **Turn ribbon** — one bar per turn, height = context tokens. Background calls
   are drawn as outlines so the eye follows the agent loop. Click to jump;
-  `←`/`→` (or `j`/`k`) also work.
-- **Context window** — a ring showing how full the window is, split by input /
-  cache read / cache write, against the model's real limit (1M variants are
-  detected from the model id). Below it, the four usage numbers.
-- **History over time** — every turn's usage as a stacked area chart. Clicking a
-  point selects that turn. Underneath: how fast the window is filling, how many
-  turns of headroom that leaves, and every turn where the transcript was edited
-  rather than appended to — click one to jump there.
-- **What fills the window** — system prompt vs messages vs tool definitions as a
-  proportion bar, then all individual sections ranked by size. Click any section
-  to open an inspector with the full text: a tool's description, its parameters
-  (type, required, docs) and raw JSON schema; a message's content blocks with
-  their types, cache markers and per-block token counts. Every block has a copy
-  button. `Esc` closes it.
-- **Where the calls go** — every request sorted into what it actually is, with
-  its share of the session's spend. See below.
-- **Cache** — why the prompt cache behaved the way it did on this turn. A
-  verdict (prefix hit / partial hit / miss / cold start), the prefix drawn in
-  token space with its cache breakpoints and the exact point where it stopped
-  matching the previous turn, what the turn cost, and what it would have cost
-  with no cache at all. See below.
-- **Threads** — the session split into the conversation and each subagent, with
-  what each one spent and what it handed back. Hidden when there is only one
-  thread. See below.
-- **Over the wire** — how long the model took to start, how fast it spoke once
-  it did, whether the SDK retried first, and the account's remaining quota. See
-  below.
-- **Thinking** — how much of the turn's output was reasoning, the order the
-  blocks came back in, and what the signatures cost to replay. See below.
-- **Tool definitions** — every tool, what its definition costs, and how often
-  the model actually called it. See below.
-- **Inside the system prompt** — the fixed instructions broken into the sections
-  they are made of, ranked by size, plus the `<system-reminder>` blocks injected
-  into the messages. See below.
-- **Raw JSON** — the complete captured request and response, collapsible.
+  `←`/`→` (or `j`/`k`) also work. The line above it names the turn's model, what
+  kind of call it is, the entrypoint (`cli` / `sdk-cli`) and any HTTP error.
 
-Token figures in the breakdown are estimates (`chars / 4`); the API only reports
-usage in aggregate. The four numbers under the ring are the real ones — and
-**Measure exactly** replaces the estimate with a measurement, at the cost of four
-`count_tokens` calls. See below.
+### The cards
+
+| Card | What it shows | Layer |
+| --- | --- | --- |
+| **Context window** | A ring: how full the window is, split by input / cache read / cache write, against the model's real limit (1M variants are detected from the beta header). Below it, the four real usage numbers. | — |
+| **Where the calls go** | Every request in the session sorted into what it actually is, with its share of the spend. | [2](#2--what-the-calls-actually-are) |
+| **Threads** | The session split into the conversation and each subagent: what each spent, what it handed back. Hidden when there is one thread. | [9](#9--threads) |
+| **Cache** | Why the cache behaved as it did: a verdict, the prefix drawn in token space with its breakpoints and the exact point where it stopped matching, the turn's cost, and its no-cache counterfactual. | [1](#1--cache-forensics) |
+| **Over the wire** | Time to first byte vs generating time, tokens/sec, bytes, silent SDK retries, failures with their reason, remaining rate-limit budget. | [7](#7--over-the-wire) |
+| **Thinking** | How much of the output was reasoning, the order the blocks came back in, and what replaying their signatures costs. | [6](#6--the-thinking-layer) |
+| **History over time** | Every turn's usage as a stacked area chart, plus how fast the window is filling, how many turns of headroom that leaves, and every turn whose transcript was edited rather than appended to — click one to jump there. | [3](#3--what-happened-to-the-history) |
+| **What fills the window** | System prompt vs messages vs tool definitions as a proportion bar, then every individual section ranked by size. Click any section for an inspector with the full text, a tool's parameters and raw schema, or a message's content blocks with their cache markers and per-block counts — each with a copy button. **Measure exactly** replaces the estimates with real counts. | [8](#8--measuring-instead-of-estimating) |
+| **Tool definitions** | Every tool, what its definition costs, how often the model actually called it, and how much came back as results. | [5](#5--what-the-tool-list-costs) |
+| **Inside the system prompt** | The fixed instructions split into their own sections and ranked, plus the `<system-reminder>` blocks injected into the messages. | [4](#4--inside-the-system-prompt) |
+| **Raw JSON** | The complete captured request and response, collapsible. | — |
+
+Token figures in the breakdown are estimates (`chars / 4`) — the API only reports
+usage in aggregate. The four numbers under the ring are the real ones, and
+**Measure exactly** turns the estimates into measurements.
+
+### HTTP API
+
+Everything the page draws is available directly.
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /api/sessions` | Every session with its turn count and last activity. |
+| `GET /api/sessions/<id>/turns` | Every turn, each annotated with `breakdown`, `call`, `cache`, `history`, `prompt`, `thinking` and `network`. |
+| `GET /api/sessions/<id>/tools` | Session-wide tool economics (layer 5). |
+| `GET /api/sessions/<id>/topology` | The session's threads (layer 9). |
+| `POST /api/sessions/<id>/turns/<n>/count` | Measures that turn exactly (layer 8). Spends quota; cached after the first call. |
+| `GET /api/events` | SSE: one annotated turn per event, live. |
+| `GET /api/health` | Liveness and total captured turns. |
+| `DELETE /api/sessions/<id>` | Drops a capture. |
 
 ---
 
-## What the calls actually are
+# Part II — What it captures
 
-One session id is not one conversation. Claude Code multiplexes the agent loop,
-its subagents, and a fleet of short background calls onto the same id — in a
-118-turn session captured here, 43 of them were security classifiers that
-evaluate a shell command before the Bash tool runs it, and never touch the
-conversation at all. Averaged into one chart they read as the context window
+Before anything can be explained it has to be recorded, and the interesting parts
+of an exchange are not all in the request body.
+
+One JSONL line per exchange (`schema: 2`), request and response kept whole, plus:
+
+| Field | Contents | Why it matters |
+| --- | --- | --- |
+| `endpoint` | Method, path, and `kind`: `messages` or `count_tokens`. | Claude Code sizes the window before it sends; without the path those calls are indistinguishable from real ones. |
+| `client` | `claude-cli` version from the user agent, auth type (`oauth` / `api-key`), SDK retry count, `x-stainless-*` runtime fingerprint. | The retry count is the only trace a silently-retried request leaves. |
+| `request` | Beyond model/system/messages/tools: `thinking`, `output_config` (effort, task budgets), `tool_choice`, `stop_sequences`, `metadata`, `context_management`, sampling params, and `betas` parsed into a list. | These decide how a turn is sampled and how much of the window survives it; none are recoverable from the response. |
+| `response` | Message id, content, stop reason, usage, and `error` — including the error event a stream can emit *after* a 200 — plus the full body for anything that isn't a plain Messages reply. | A captured 429 used to record an empty object. |
+| `response.headers` | `request-id`, every `anthropic-ratelimit-*`, `retry-after`. | Correlation with Anthropic's own logs, and the account's remaining quota. |
+| `timing` | `ttfbMs`, `durationMs`. | Latency has two halves that mean different things. |
+| `bytes` | Request and response sizes on the wire. | |
+
+Streams also accumulate `thinking` and `signature` deltas, which were previously
+dropped on the floor.
+
+**Credentials are never written.** `authorization`, `x-api-key`, `cookie` and
+`set-cookie` are dropped *before* the record is built, not redacted afterwards.
+The one place a credential is held at all is described in
+[layer 8](#8--measuring-instead-of-estimating).
+
+Captures written before this schema still load; they simply lack the new fields,
+and the cards that depend on them hide rather than showing zeroes.
+
+---
+
+# Part III — The nine layers
+
+Each layer answers one question the raw capture cannot.
+
+| # | Layer | The question it answers |
+| --- | --- | --- |
+| [1](#1--cache-forensics) | Cache forensics | The cache rewrote 40K tokens — *why*, and what did that cost? |
+| [2](#2--what-the-calls-actually-are) | Call classification | Which of these requests are the conversation, and which are not? |
+| [3](#3--what-happened-to-the-history) | History diffing | Did the transcript grow, or did something edit it underneath the model? |
+| [4](#4--inside-the-system-prompt) | Prompt anatomy | The system prompt is 3.6K tokens — of what? |
+| [5](#5--what-the-tool-list-costs) | Tool economics | What does the tool list cost, against what it is used for? |
+| [6](#6--the-thinking-layer) | Thinking | How much of the output was reasoning rather than the answer? |
+| [7](#7--over-the-wire) | Network | Was it slow to start or slow to speak — and how much quota is left? |
+| [8](#8--measuring-instead-of-estimating) | Exact counting | How wrong is `chars / 4`? |
+| [9](#9--threads) | Topology | What did each subagent spend, and what did it hand back? |
+
+Figures below come from two real captured sessions — 118 turns of the Claude Code
+CLI, and one Agent SDK turn — unless a section says otherwise.
+
+---
+
+## 1 · Cache forensics
+
+**What it's for.** `usage` tells you a turn re-wrote 40K tokens. It never tells
+you why, and "why" is the half you can act on: a rewrite caused by a changed
+system block is a bug you can fix, one caused by an expired TTL is not.
+
+**How it works.** Each request is reconstructed as the prefix the API actually
+matches on — tools, then system, then messages, one unit per content block. Each
+unit is hashed and compared against the previous turn *of the same conversation*.
+The first unit whose bytes differ is where the cache stopped being reusable.
+
+Two details separate signal from noise:
+
+- `cache_control` is excluded from the hashes. It marks content rather than being
+  content; hashing it made the rolling breakpoint read as an edit to both the
+  block it left and the block it landed on, on every single turn.
+- Only a difference *before* the last breakpoint costs anything. Past it the
+  bytes were never cached, so a changed tail is the conversation moving on, not a
+  miss.
+
+| Verdict | Meaning |
+| --- | --- |
+| prefix hit | Everything the previous turn had cached was byte-identical. |
+| partial hit | Something inside the cached region changed; the tokens after it were written again. |
+| miss | Nothing was reused — attributed to a prefix change, an expired TTL, or (prefix unchanged, TTL not up) eviction upstream. |
+| cold start | First turn of this conversation. |
+
+**Cost.** List prices with the cache multipliers — writes 1.25× at the 5-minute
+TTL, 2× at the hour, reads 0.1× — shown against the counterfactual of no cache at
+all. A large `cache_creation` number is only wasteful if nothing reads it, and
+that comparison is the only honest way to tell which it was. A model missing from
+the price table shows no cost rather than a wrong one.
+
+**Found in the captures.** 94 prefix hits, 21 partial hits, 1 miss, 2 cold
+starts. **$6.97 spent against $44.16 without caching.** The partial hits were
+almost all Claude Code rewriting a mid-conversation `system` message in place —
+about 112 tokens each, landing inside the cached prefix.
+
+---
+
+## 2 · What the calls actually are
+
+**What it's for.** One session id is not one conversation. Claude Code
+multiplexes the agent loop, its subagents, and a fleet of short background calls
+onto the same id. Averaged into one chart they read as the context window
 collapsing and refilling; averaged into one bill they are invisible.
 
-Each request is sorted by what it sends:
+**How it works.** Every request is sorted by what it sends — signals on the wire,
+not guesses:
 
 | Kind | Recognised by |
 | --- | --- |
 | agent loop | Tool definitions present — the conversation whose window the UI tracks. |
 | subagent | An `x-claude-code-agent-id` header; its own context window. |
-| bash security check | A system prompt that opens "You are a security monitor for autonomous AI coding agents". |
-| session title | The title-generation prompt, run once to name the session. |
+| bash security check | A system prompt opening "You are a security monitor for autonomous AI coding agents". |
+| session title | The title-generation prompt, run once to name the session for the resume list. |
 | compaction | A toolless call asking for a summary of the conversation. |
 | quota probe | A one-token request whose entire body is the word `quota` — the startup reachability check. |
-| token count | A `/v1/messages/count_tokens` call: Claude Code sizing the window before it sends. |
-| utility call | Anything else with no tools. Its opening line is kept so an unrecognised kind is still identifiable rather than silently bucketed. |
+| token count | A `/v1/messages/count_tokens` call. |
+| utility call | Anything else with no tools. Its opening line is kept, so an unrecognised kind stays identifiable rather than being silently bucketed. |
 
-Claude Code also prepends its own billing header as the first system block
-(`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
-build that produced it and whether it came from the terminal (`cli`) or the
-Agent SDK (`sdk-cli`).
+The ribbon and the trend chart follow this classification instead of the
+has-no-tools heuristic they used before.
 
-## Threads
+**Found in the captures.** Of 118 requests: 73 agent loop, **43 bash security
+checks**, 1 session title, 1 quota probe (which got a 429). The background calls
+were 38% of the requests and 11% of the spend — 2.8M input tokens.
 
-A subagent is a whole conversation of its own — its own context window, its own
-tool set, its own bill — that exists to hand a few hundred tokens back to the
-conversation that spawned it. Turn by turn that is invisible: its turns are
-interleaved with everything else and its cost lands in the session total with
-nothing to attribute it to.
+**Also on the wire.** Claude Code prepends its own billing header as the first
+system block (`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so every capture
+records the CLI build that produced it and whether it came from the terminal
+(`cli`) or the Agent SDK (`sdk-cli`).
 
-Threads are grouped by the `x-claude-code-agent-id` header, which is fact. Which
-tool call spawned which thread is **inferred** from ordering — the closest
-`Agent` / `Task` / `Workflow` call already made when the thread's first turn
-arrived — and the card says so rather than presenting it as read from the wire.
+---
 
-The number worth having is the ratio. In a session driven through the proxy for
-testing, two subagents spent 80.7K tokens and $0.083 — 69% of the session — to
-report back 18 tokens between them. That is the shape of the trade: a large
-private context producing a small public answer.
+## 3 · What happened to the history
 
-Clicking a thread jumps to its first turn, where the cache card shows it starting
-cold: a subagent's prefix has nothing in common with the conversation's.
+**What it's for.** A conversation is supposed to grow by appending. Anything else
+is the harness editing the transcript underneath the model — and none of it shows
+up in the usage numbers, because a rewritten message costs exactly what the one
+it replaced did.
 
-## Measuring instead of estimating
-
-`count_tokens` answers exactly, but only for a whole request, so the sections
-have to be isolated by measuring four of them and subtracting: a minimal
-baseline, baseline plus tools, baseline plus system, and the real request. Tools
-and system fall out of the differences, the messages are what is left, and the
-baseline is the fixed per-request overhead nothing else shows you.
-
-Four calls rather than one per section — measuring per message would be one call
-per message. It reports the calibration too: how far `chars / 4` was off on this
-request, and the chars-per-token the request actually averaged, which is the
-number to read every other estimate by.
-
-**It spends your quota, so nothing measures on its own.** It happens on an
-explicit click, results are cached so asking twice is free, and the button says
-what it will do before you press it.
-
-### The credential
-
-Measuring means calling the API, which needs a credential — and everything else
-in this proxy is built so credentials never reach disk. The line drawn here is
-narrower but explicit: the auth header of a session's last request is kept in a
-**process-lifetime map in memory**, never written to disk, never logged, never
-returned by any endpoint, and used only to authenticate a count for the session
-it came from. Restarting the proxy forgets it.
-
-If you would rather it never reuse Claude Code's own credential, start the proxy
-with `ANTHROPIC_API_KEY` set — an explicit key always wins.
-
-## Over the wire
-
-Latency splits in two and the halves mean different things: the wait before the
-first byte is queueing and prompt processing, everything after it is generation.
-Averaged together, a slow queue reads as a slow model — so they are reported
-separately, with tokens per second measured against the generating half only.
-
-Alongside them, three things that are otherwise invisible:
-
-- **Silent retries.** `x-stainless-retry-count` is the only place a retry the SDK
-  already handled shows up. The request succeeded, so nothing else surfaces.
-- **Failures with their reason.** A 429 carries its error body and `retry-after`;
-  a stream that fails after a 200 carries the error event that ended it.
-- **Remaining quota.** The `anthropic-ratelimit-*` headers, parsed by shape
-  rather than from a fixed list, so a limit type that did not exist when this was
-  written still appears.
-
-These fields only exist in captures recorded after the proxy started keeping
-them, so the card hides itself on older ones rather than showing zeroes.
-
-## The thinking layer
-
-Thinking is billed as output but is not the answer, so a turn's output count says
-nothing about how much of it anyone reads. In the session captured here, **32% of
-all output tokens were thinking** — and adaptive thinking chose per turn, with 42
-of 73 conversation turns thinking at all and 31 answering directly.
-
-The blocks come back with an **empty `thinking` string and a long signature**:
-the raw reasoning is never returned, only a token that lets the model replay it.
-The tokens were still generated and still billed. That is visible from the wire
-twice over — in the response, and in what Claude Code echoes back on the next
-turn.
-
-The signature is the part that keeps costing. Every thinking block is replayed
-into every later request for the rest of the conversation, and by the end of this
-session 39 of them carried **59,520 characters — about 26% of the entire message
-history** — of bytes nobody can read.
-
-The response block order is shown as well, which is where interleaved thinking is
-visible: 37 turns ran `thinking → tool call`, the model reasoning between tool
-calls rather than once up front.
-
-What was *requested* — `thinking`, `output_config.effort`, task budgets — is
-reported only for captures recorded after the proxy started keeping those fields.
-Older captures say so rather than implying nothing was set.
-
-## What the tool list costs
-
-Tool definitions render at the very front of the prompt, so all of them are
-re-sent on every turn of a session whether the model ever calls them or not.
-That makes an unused tool a fixed line item, not a harmless extra — and because
-they sit ahead of everything else, adding or removing one invalidates the whole
-cache.
-
-In the session captured here: 59 tools, 34.9K tokens of definitions, and **58 of
-them were never called**. The one that was, `Bash`, has a 613-token definition
-and returned 16.3K tokens of results.
-
-The bill is attributed rather than assumed. Definitions are served from cache
-after the first turn, so charging them at full input price would be wrong by an
-order of magnitude; instead each turn's real prompt spend is split by the share
-of the prompt the definitions occupy. On that basis they account for ≈$2.76 of
-the $5.84 that session spent on prompts.
-
-Tool-list changes are listed too, since each one ends the cached prefix at its
-turn. In these captures the list never changed.
-
-Because this is one fact about a whole session rather than a property of a turn,
-it is served from its own endpoint (`/api/sessions/<id>/tools`) instead of being
-repeated on all 118 turns.
-
-## Inside the system prompt
-
-"System prompt: 3.6K tokens" is a number you can do nothing with. The prompt is a
-stack of independently-sourced pieces, each one present because something is
-switched on, so the proxy splits it on its own markdown headings and sizes them
-separately. In the session captured here, `Claude in Chrome browser automation`
-is 28% of the system prompt — 1K tokens, on every turn, in a session that never
-opened a browser.
-
-`<system-reminder>` blocks get their own layer. They are injected into user
-messages rather than the system prompt, so they read as conversation and are
-billed as conversation, and they are neither. That layer is where the bulky ones
-turn out to live: in the Agent SDK session captured here, the agent-type
-catalogue is 2.0K tokens and the skill catalogue 1.5K, neither of them anywhere
-near the system prompt.
-
-Sections are also compared turn to turn. A prompt that changes mid-session
-changes behaviour *and* ends the cached prefix at that point, and it does both
-silently — so any section that was added, removed, or rewritten is flagged on the
-turn it happened, and the card says plainly when nothing changed at all.
-
-## What happened to the history
-
-A conversation is supposed to grow by appending. Anything else is the harness
-editing the transcript underneath the model, and none of it shows up in the
-usage numbers — a rewritten message costs exactly what the one it replaced did.
-Each turn's message list is compared with the previous turn's, and the change is
-named:
+**How it works.** Each turn's message list is compared with the previous turn's
+and the change is named:
 
 | Shape | What it means |
 | --- | --- |
 | append | Only new messages. The normal case. |
-| edit | A message that was already there came back different — rewritten, shortened, or a tool result cleared to reclaim room. |
+| edit | A message already there came back different — rewritten, shortened, or a tool result cleared to reclaim room. |
 | branch | The list got shorter after a common prefix: an earlier state replayed. |
 | compaction | Most of the history is gone and the tokens collapsed with it — a summary standing in for what was there. |
 | reset | Nothing survived. |
 
-Only the conversations are reported. A background classifier's single message
-growing between calls is how those calls work, not an edited transcript, and
-there are enough of them to bury the real ones.
+Only conversations are reported. A background classifier's single message growing
+between calls is how those calls work, not an edited transcript, and there are
+enough of them to bury the real ones.
 
-In the session captured here nothing was compacted; what did happen, 21 times,
-was Claude Code rewriting a mid-conversation `system` message or shortening an
-earlier user message in place — each one landing inside the cached prefix, which
-is exactly what the cache card reports from the other side.
+The trend chart's footer carries the other half: how fast the window is filling,
+and how many turns of headroom that leaves at the current rate.
 
-## Cache forensics
+**Found in the captures.** No compaction, no branches. What did happen, on 21
+turns, was a mid-conversation `system` message being rewritten or an earlier user
+message shortened in place — ≈290 tokens the model can no longer see, every one of
+them inside the cached prefix, which is exactly what layer 1 reports from the
+other side.
 
-`usage` tells you a turn re-wrote 40K tokens; it never tells you why, and "why"
-is the half you can act on. The proxy reconstructs the prefix the API actually
-matches on — tools, then system, then messages, one unit per content block —
-hashes each unit, and compares it against the previous turn of the same
-conversation. The first unit whose bytes differ is where the cache stopped being
-reusable.
+---
 
-Only a difference *before* the last cache breakpoint costs anything; past it the
-bytes were never cached, so a changed tail is just the conversation moving on.
-That distinction is what separates a real miss from normal growth:
+## 4 · Inside the system prompt
 
-| Verdict | Meaning |
-| --- | --- |
-| prefix hit | Everything the previous turn had cached was byte-identical. |
-| partial hit | Something inside the cached region changed; the tokens after it had to be written again. |
-| miss | Nothing was reused. Attributed to a prefix change, an expired TTL, or — when the prefix is unchanged and the TTL is not up — eviction upstream. |
-| cold start | First turn of this conversation; there was nothing to reuse. |
+**What it's for.** "System prompt: 3.6K tokens" is a number you can do nothing
+with. The prompt is a stack of independently-sourced pieces, each present because
+something is switched on. Sizing them separately turns the number into a decision
+about what to turn off.
 
-Costs use Anthropic's list prices with the cache multipliers (writes 1.25x at the
-5-minute TTL, 2x at the hour, reads 0.1x), alongside the counterfactual: the same
-turn with every cached token re-sent at full price. A large `cache_creation`
-number is only wasteful if nothing reads it, and that comparison is the only
-honest way to see which it was.
+**How it works.** The prompt is split on its own markdown headings — the seams its
+authors intended — and each section sized. Sections are also compared turn to
+turn, because a prompt that changes mid-session changes behaviour *and* ends the
+cached prefix there, silently on both counts.
 
-One session id carries several conversations — the agent loop, subagents, and
-short utility calls that ship no tools. Each is compared only against its own
-history; among recent turns, the predecessor is the one sharing the longest
-prefix.
+`<system-reminder>` blocks get their own layer. They are injected into user
+messages rather than the system prompt, so they read as conversation and are
+billed as conversation, and they are neither.
 
-Prices are a cached table. A model that isn't in it shows no cost rather than a
-wrong one.
+**Found in the captures.** `Claude in Chrome browser automation` is **28% of the
+system prompt** — 1K tokens on every turn, in a session that never opened a
+browser. And the bulky instructions turn out not to live in the system prompt at
+all: in the Agent SDK session, the reminder layer carries a **2.0K-token
+agent-type catalogue** and a **1.5K-token skill catalogue**. Neither session
+changed its prompt mid-flight, and the card says so plainly rather than inventing
+a finding.
 
-## What a capture records
+---
 
-One JSONL line per exchange (`schema: 2`). The request and response bodies are
-kept whole, plus the parts of the exchange that live outside them:
+## 5 · What the tool list costs
 
-| Field | Contents |
-| --- | --- |
-| `endpoint` | Method, path and `kind` — `messages`, or `count_tokens` for the calls Claude Code makes to size the window before it sends. |
-| `client` | `claude-cli` version parsed out of the user agent, auth type (`oauth` / `api-key`), SDK retry count, and the `x-stainless-*` runtime fingerprint. |
-| `request` | Beyond model/system/messages/tools: `thinking`, `output_config` (effort, task budgets), `tool_choice`, `stop_sequences`, `metadata`, `context_management`, sampling params, and `betas` as a parsed list. |
-| `response` | Message id, content, stop reason, usage, plus `error` — including the `error` event a stream can emit *after* a 200 — and the full body for anything that isn't a plain Messages reply. |
-| `response.headers` | `request-id` for correlating with Anthropic's logs, `anthropic-ratelimit-*` for remaining quota, `retry-after` on a 429. |
-| `timing` | `ttfbMs` (time to first byte) and `durationMs`. |
-| `bytes` | Request and response sizes on the wire. |
+**What it's for.** Tool definitions render at the very front of the prompt, so
+all of them are re-sent on every turn whether the model ever calls them or not.
+That makes an unused tool a fixed line item, not a harmless extra — and because
+they sit ahead of everything else, adding or removing one invalidates the whole
+cache.
 
-Credentials are never written: `authorization`, `x-api-key`, `cookie` and
-`set-cookie` are dropped before the record is built, not redacted afterwards.
-(The one place a credential is held at all is described under *Measuring instead
-of estimating* — in memory, for the life of the process, and only to answer an
-explicit request to measure.)
+**How it works.** Per tool: what its definition costs, how many turns carried it,
+how many times the model called it, and how many tokens came back as results.
+Tool-list changes are listed too, since each one ends the cached prefix at its
+turn.
 
-Captures written before this schema are still read; they simply lack the new
-fields.
+The bill is **attributed rather than assumed**. Definitions are served from cache
+after the first turn, so charging them at full input price would be wrong by an
+order of magnitude; instead each turn's real prompt spend is split by the share of
+the prompt the definitions occupy.
+
+**Found in the captures.** 59 tools, 34.9K tokens of definitions, and **58 of them
+were never called** — 98% of the definition bytes, re-sent on all 73 turns. The
+one that was, `Bash`, has a 613-token definition and returned 16.3K tokens of
+results. On the attribution above, definitions account for **≈$2.76 of the $5.84**
+that session spent on prompts. The list never changed, so it stayed cacheable
+throughout.
+
+Served from `/api/sessions/<id>/tools`, because it is one fact about a whole
+session rather than a property of a turn.
+
+---
+
+## 6 · The thinking layer
+
+**What it's for.** Thinking is billed as output but is not the answer, so a
+turn's output count says nothing about how much of it anyone reads.
+
+**How it works.** Per turn: thinking tokens against output tokens, the order the
+response blocks came back in, and the state of the blocks themselves. Per session:
+how many turns thought at all, and what the accumulated signatures cost to replay.
+
+**Found in the captures.**
+
+- **32% of all output tokens were thinking** (14.6K of 45.2K). Adaptive thinking
+  chose per turn: 42 of 73 conversation turns thought, 31 answered directly.
+- The blocks come back with an **empty `thinking` string and a long signature** —
+  the raw reasoning is never returned. That is visible twice over: in the
+  response, and in what Claude Code echoes back on the next turn.
+- The signature is what keeps costing. Every thinking block is replayed into every
+  later request for the rest of the conversation; by the end of the session 39 of
+  them carried **59,520 characters, about 26% of the entire message history**, of
+  bytes nobody can read.
+- 37 turns ran `thinking → tool call`: interleaved thinking, the model reasoning
+  between tool calls rather than once up front.
+
+**Limit.** What was *requested* — `thinking`, `output_config.effort`, task budgets
+— is only reported for captures recorded after the proxy started keeping those
+fields. Older captures say so rather than implying nothing was set.
+
+---
+
+## 7 · Over the wire
+
+**What it's for.** Latency splits in two and the halves mean different things: the
+wait before the first byte is queueing and prompt processing, everything after it
+is generation. Averaged together, a slow queue reads as a slow model.
+
+**How it works.** The two halves are reported separately, with tokens per second
+measured against the generating half only. Alongside them, three things that are
+otherwise invisible:
+
+- **Silent retries** — `x-stainless-retry-count` is the only place a retry the SDK
+  already handled shows up. The request succeeded, so nothing else surfaces.
+- **Failures with their reason** — a 429 carries its error body and `retry-after`;
+  a stream that fails after a 200 carries the error event that ended it.
+- **Remaining quota** — the `anthropic-ratelimit-*` headers, parsed *by shape*
+  (`<resource>-<field>`) rather than from a fixed list, so a limit type that did
+  not exist when this was written still appears.
+
+**Limit and verification.** These fields only exist in captures recorded after the
+proxy started keeping them, so the card hides itself on older ones. Verified by
+driving the real proxy against a stubbed upstream: staggered first-byte times, a
+rate-limited turn with `retry-after`, and a turn that arrived after an SDK retry
+all land as expected.
+
+---
+
+## 8 · Measuring instead of estimating
+
+**What it's for.** Every token figure in the breakdown is `chars / 4`, because the
+API reports usage in aggregate and never per section. `count_tokens` answers
+exactly.
+
+**How it works.** `count_tokens` only answers for a whole request, so the sections
+are isolated by measuring four and subtracting:
+
+```
+baseline    a minimal request      →  the fixed per-request overhead
++ tools     baseline plus tools    →  tools    = (+tools − baseline)
++ system    baseline plus system   →  system   = (+system − baseline)
+full        the real request       →  messages = full − tools − system − baseline
+```
+
+Four calls rather than one per section — measuring per message would be one call
+per message. It reports the calibration too: how far `chars / 4` was off on this
+request, and the chars-per-token it actually averaged, which is the number to read
+every other estimate by.
+
+**It spends your quota, so nothing measures on its own.** It happens on an
+explicit click, the button says what it will do before you press it, and results
+are cached so asking twice is free.
+
+### The credential
+
+Measuring means calling the API, which needs a credential — and everything else
+here is built so credentials never reach disk. The line drawn is narrower but
+explicit: the auth header of a session's last request is kept in a
+**process-lifetime map in memory**, never written to disk, never logged, never
+returned by any endpoint, and used only to authenticate a count for the session it
+came from. Restarting the proxy forgets it.
+
+If you would rather it never reuse Claude Code's own credential, start the proxy
+with `ANTHROPIC_API_KEY` set — an explicit key always wins.
+
+**Verification.** Driven against a stubbed upstream with a deliberately
+non-`chars/4` tokenizer: the decomposition adds up, the remembered credential
+reaches the outbound calls, and it never appears in the capture file.
+
+---
+
+## 9 · Threads
+
+**What it's for.** A subagent is a whole conversation of its own — its own context
+window, its own tool set, its own bill — that exists to hand a few hundred tokens
+back to the conversation that spawned it. Turn by turn that is invisible: its
+turns interleave with everything else, and its cost lands in the session total
+with nothing to attribute it to.
+
+**How it works.** Threads are grouped by the `x-claude-code-agent-id` header,
+which is fact. Which tool call spawned which thread is **inferred** from ordering
+— the closest `Agent` / `Task` / `Workflow` call already made when the thread's
+first turn arrived — and the card says so rather than presenting it as read from
+the wire. Clicking a thread jumps to its first turn, where the cache card shows it
+starting cold: a subagent's prefix has nothing in common with the conversation's.
+
+The number worth having is the ratio between what a subagent spent and what it
+handed back.
+
+**Limit and verification.** The captures on hand contain no subagents, so this was
+verified against a scripted session driven through the real proxy: two subagents
+spent 80.7K tokens and $0.083 — 69% of that session — to report back 18 tokens
+between them.
+
+---
 
 ## Layout
 
 ```
-bin/cli.js            the ctx-proxy command
-src/run.js            proxy entry point
-src/proxy.js          forwards to api.anthropic.com and records each exchange
-src/server.js         static files + /api/sessions, /api/events (SSE), /api/health
-src/capture-store.js  append-only JSONL store, one file per session
-src/breakdown.js      per-section size estimates for a request body
-src/cache-forensics.js  chain walking, prefix diffing, and what a cache miss cost
-src/call-kinds.js     sorts each request into agent loop / subagent / background
-src/history-diff.js   what changed in the message list since the previous turn
-src/prompt-anatomy.js system prompt split into sections, plus the reminder layer
-src/tool-economics.js what each tool definition costs against how often it is called
-src/topology.js       the session split into conversation and subagent threads
-src/thinking.js       thinking tokens, block order, and the cost of replaying signatures
-src/network.js        latency split, retries, failures, and rate-limit budget
-src/token-count.js    exact section sizes via four count_tokens calls
-src/credentials.js    in-memory-only auth, used solely for those calls
-src/pricing.js        list prices and the cache read/write multipliers
-src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
-public/               the UI (no build step — Tailwind + Chart.js from CDN)
+bin/cli.js              the ctx-proxy command
+src/run.js              proxy entry point
+src/proxy.js            forwards to api.anthropic.com and records each exchange
+src/server.js           static files + the HTTP API + SSE
+src/capture-store.js    append-only JSONL store, one file per session
+src/breakdown.js        per-section size estimates for a request body
+
+src/cache-forensics.js  layer 1 — chain walking, prefix diffing, cost of a miss
+src/call-kinds.js       layer 2 — agent loop / subagent / background classification
+src/history-diff.js     layer 3 — what changed in the message list since last turn
+src/prompt-anatomy.js   layer 4 — system prompt sections plus the reminder layer
+src/tool-economics.js   layer 5 — definition cost against actual use
+src/thinking.js         layer 6 — thinking tokens, block order, signature replay
+src/network.js          layer 7 — latency split, retries, failures, rate limits
+src/token-count.js      layer 8 — exact sizes via four count_tokens calls
+src/credentials.js      layer 8 — in-memory-only auth, used solely for those calls
+src/topology.js         layer 9 — conversation and subagent threads
+
+src/pricing.js          list prices and the cache read/write multipliers
+src/settings-env.js     journalled read/modify/write of ~/.claude/settings.json
+public/                 the UI (no build step — Tailwind + Chart.js from CDN)
 ```
 
 ## Notes
