@@ -45,6 +45,14 @@ const state = {
   measurements: {},
   measuring: null,
   measureError: null,
+  /* Time machine: which turn to diff against, and replay results keyed the same
+     way as measurements. Replays are never persisted — an experiment is not
+     something the session did. */
+  diffTarget: null,
+  replayChanges: { model: null, tools: 'all', system: 'keep' },
+  replays: {},
+  replaying: null,
+  replayError: null,
   /* Session-wide statistics, fetched separately: facts about the whole session
      rather than things that belong on every turn. */
   tools: null,
@@ -181,6 +189,8 @@ async function selectSession(sessionId) {
 
 function selectTurn(i) {
   state.measureError = null;
+  state.replayError = null;
+  state.diffTarget = null;
   if (i < 0 || i >= state.turns.length) return;
   state.turnIndex = i;
   /* Picking the newest turn is how you get back to following the tail. */
@@ -328,6 +338,8 @@ function renderDetail() {
   renderThreads();
   renderPrompt(turn);
   renderMeasure();
+  renderMachine(turn);
+  wireExportButtons(turn);
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
 
   el('json-expand').onclick = () => container.querySelectorAll('.json-view details').forEach((d) => (d.open = true));
@@ -705,6 +717,355 @@ function renderThreads() {
   el('threads-foot').innerHTML = lines
     .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
     .join('');
+}
+
+/* ---------------------------------------------------------- time machine */
+
+/* Every other card measures what happened. This one compares two turns you
+   choose, and re-sends one with something changed — the only way to answer a
+   question a capture cannot, like whether the 58 never-called tools mattered. */
+
+function replayKey(index) {
+  return `${state.sessionId}#${index}`;
+}
+
+function renderMachine(turn) {
+  const card = el('machine-card');
+  if (!turn || !turn.request) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  el('machine-sub').textContent = `turn ${state.turnIndex + 1} of ${state.turns.length}`;
+  renderDiffControls();
+  renderReplayControls(turn);
+}
+
+/* ---- compare ---- */
+
+function renderDiffControls() {
+  const select = el('diff-target');
+  const current = state.turns[state.turnIndex];
+  const chainKind = callOf(current) ? callOf(current).id : null;
+
+  /* Only turns of the same kind are worth diffing: a security check against an
+     agent turn is two unrelated prompts, and the diff would be the whole body. */
+  const candidates = state.turns
+    .map((t, index) => ({ t, index }))
+    .filter(({ t, index }) => index !== state.turnIndex && (!chainKind || (callOf(t) && callOf(t).id === chainKind)));
+
+  if (!candidates.length) {
+    select.innerHTML = '<option value="">nothing comparable in this session</option>';
+    select.disabled = true;
+    el('diff-result').hidden = true;
+    el('diff-status').textContent = '';
+    return;
+  }
+  select.disabled = false;
+
+  const earlier = candidates.filter((c) => c.index < state.turnIndex);
+  const fallback = earlier.length ? earlier[0].index : candidates[0].index;
+  const chosen = state.diffTarget != null && candidates.some((c) => c.index === state.diffTarget) ? state.diffTarget : fallback;
+
+  select.innerHTML = candidates
+    .map(
+      ({ index }) =>
+        `<option value="${index}"${index === chosen ? ' selected' : ''}>turn #${index + 1}${
+          index === fallback ? ' — first of this kind' : ''
+        }</option>`
+    )
+    .join('');
+  select.onchange = () => {
+    state.diffTarget = Number(select.value);
+    loadDiff();
+  };
+
+  state.diffTarget = chosen;
+  loadDiff();
+}
+
+async function loadDiff() {
+  const a = state.diffTarget;
+  const b = state.turnIndex;
+  const status = el('diff-status');
+  const panel = el('diff-result');
+  if (a == null || a === b) {
+    panel.hidden = true;
+    return;
+  }
+
+  status.textContent = 'comparing…';
+  try {
+    const diff = await fetchJson(
+      `/api/sessions/${encodeURIComponent(state.sessionId)}/diff?a=${a}&b=${b}`
+    );
+    // The selection can move while a fetch is in flight.
+    if (state.diffTarget !== a || state.turnIndex !== b) return;
+    status.textContent = `#${a + 1} → #${b + 1}`;
+    renderDiff(diff, a, b);
+  } catch (err) {
+    status.textContent = err.message;
+    panel.hidden = true;
+  }
+}
+
+function delta(before, after) {
+  const change = after - before;
+  const sign = change > 0 ? '+' : change < 0 ? '−' : '';
+  return `${compactNum(before)} → ${compactNum(after)}${change ? ` (${sign}${compactNum(Math.abs(change))})` : ''}`;
+}
+
+function renderDiff(diff, a, b) {
+  const panel = el('diff-result');
+  if (!diff) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const rows = [];
+
+  const m = diff.messages;
+  const messageNotes = [];
+  if (m.appended) messageNotes.push(`${m.appended} appended (+${compactNum(m.appendedTokens)})`);
+  if (m.dropped) messageNotes.push(`${m.dropped} dropped (−${compactNum(m.droppedTokens)})`);
+  if (m.edited.length) messageNotes.push(`${m.edited.length} edited in place`);
+  messageNotes.push(`${m.common} shared from the start`);
+  rows.push(['messages', delta(m.tokensBefore, m.tokensAfter), messageNotes.join(' · ')]);
+
+  const t = diff.tools;
+  const toolNotes = [];
+  if (t.added.length) toolNotes.push(`added ${t.added.map((x) => x.key).join(', ')}`);
+  if (t.removed.length) toolNotes.push(`removed ${t.removed.map((x) => x.key).join(', ')}`);
+  if (t.changed.length) toolNotes.push(`${t.changed.length} definitions rewritten`);
+  rows.push([
+    'tool definitions',
+    delta(t.tokensBefore, t.tokensAfter),
+    toolNotes.length ? toolNotes.join(' · ') : `unchanged, ${t.countAfter} tools`,
+  ]);
+
+  const sys = diff.system;
+  const sysNotes = [];
+  if (sys.added.length) sysNotes.push(`added ${sys.added.map((x) => x.key).join(', ')}`);
+  if (sys.removed.length) sysNotes.push(`removed ${sys.removed.map((x) => x.key).join(', ')}`);
+  if (sys.changed.length) sysNotes.push(`rewritten: ${sys.changed.map((x) => x.key).join(', ')}`);
+  rows.push(['system prompt', delta(sys.tokensBefore, sys.tokensAfter), sysNotes.length ? sysNotes.join(' · ') : 'unchanged']);
+
+  if (diff.models.before !== diff.models.after) {
+    rows.push(['model', `${escapeHtml(diff.models.before || '—')} → ${escapeHtml(diff.models.after || '—')}`, 'a model switch invalidates the cache outright']);
+  }
+
+  panel.innerHTML = rows
+    .map(
+      ([label, value, note]) => `
+      <div class="stat-row">
+        <div class="min-w-0 font-mono text-[12px] truncate">${escapeHtml(label)}</div>
+        <div class="font-mono text-[12px] tabular-nums text-right shrink-0">${value}</div>
+        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk truncate" title="${escapeHtml(note)}">${escapeHtml(note)}</div>
+      </div>`
+    )
+    .join('');
+}
+
+/* ---- replay ---- */
+
+function renderReplayControls(turn) {
+  const modelSelect = el('replay-model');
+  /* Offer the models this session actually used rather than a hardcoded list —
+     it stays right as models come and go. */
+  const models = [...new Set(state.turns.map((t) => t.request && t.request.model).filter(Boolean))];
+  const chosen = state.replayChanges.model || '';
+  modelSelect.innerHTML = [
+    `<option value=""${chosen ? '' : ' selected'}>as captured (${escapeHtml(turn.request.model || '—')})</option>`,
+    ...models
+      .filter((model) => model !== turn.request.model)
+      .map((model) => `<option value="${escapeHtml(model)}"${chosen === model ? ' selected' : ''}>${escapeHtml(model)}</option>`),
+  ].join('');
+
+  el('replay-tools').value = state.replayChanges.tools || 'all';
+  el('replay-system').value = state.replayChanges.system || 'keep';
+
+  for (const [id, field] of [
+    ['replay-model', 'model'],
+    ['replay-tools', 'tools'],
+    ['replay-system', 'system'],
+  ]) {
+    el(id).onchange = () => {
+      state.replayChanges = { ...state.replayChanges, [field]: el(id).value || null };
+    };
+  }
+
+  const key = replayKey(state.turnIndex);
+  const busy = state.replaying === key;
+  const button = el('replay-btn');
+  button.disabled = busy;
+  button.textContent = busy ? 'replaying…' : 'Replay';
+  button.onclick = () => replayCurrentTurn();
+
+  el('replay-note').textContent =
+    'sends one real request and spends quota · output capped at 4K tokens · the reply is not recorded';
+
+  renderReplayResult();
+}
+
+async function replayCurrentTurn() {
+  const key = replayKey(state.turnIndex);
+  if (state.replaying) return;
+  state.replaying = key;
+  state.replayError = null;
+  renderReplayControls(state.turns[state.turnIndex]);
+
+  try {
+    const response = await fetch(
+      `/api/sessions/${encodeURIComponent(state.sessionId)}/turns/${state.turnIndex}/replay`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(state.replayChanges),
+      }
+    );
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.message || body.error || `HTTP ${response.status}`);
+    state.replays[key] = body;
+  } catch (err) {
+    state.replayError = err.message;
+  } finally {
+    state.replaying = null;
+    renderReplayControls(state.turns[state.turnIndex]);
+  }
+}
+
+function replaySide(side) {
+  const usage = side.usage || {};
+  const billed =
+    Number(usage.input_tokens || 0) +
+    Number(usage.cache_read_input_tokens || 0) +
+    Number(usage.cache_creation_input_tokens || 0);
+  return {
+    model: side.model || '—',
+    tools: side.toolCount ? `${side.toolCount}` : 'none',
+    prompt: compactNum(side.promptTokensEstimate),
+    billed: billed ? compactNum(billed) : '—',
+    output: usage.output_tokens != null ? compactNum(usage.output_tokens) : '—',
+    cost: side.cost ? money(side.cost.actual) : '—',
+    stop: side.stopReason || '—',
+    calls: side.toolCalls.length ? side.toolCalls.join(', ') : 'none',
+  };
+}
+
+function renderReplayResult() {
+  const panel = el('replay-result');
+  if (state.replayError) {
+    panel.hidden = false;
+    panel.innerHTML = `<div class="font-mono text-[11px]" style="color:var(--danger)">${escapeHtml(state.replayError)}</div>`;
+    return;
+  }
+
+  const result = state.replays[replayKey(state.turnIndex)];
+  if (!result) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const original = replaySide(result.original);
+  const replay = replaySide(result.replay);
+  const rows = [
+    ['model', original.model, replay.model],
+    ['tools sent', original.tools, replay.tools],
+    ['prompt (est)', original.prompt, replay.prompt],
+    ['billed in', original.billed, replay.billed],
+    ['output', original.output, replay.output],
+    ['cost', original.cost, replay.cost],
+    ['stop reason', original.stop, replay.stop],
+    ['tools called', original.calls, replay.calls],
+  ];
+
+  panel.innerHTML = `
+    <div class="compare-grid">
+      <div class="head">&nbsp;</div><div class="head">as captured</div><div class="head">replayed</div>
+      ${rows
+        .map(
+          ([label, a, b]) => `
+        <div class="font-mono text-[11px] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</div>
+        <div class="font-mono text-[12px] tabular-nums truncate" title="${escapeHtml(String(a))}">${escapeHtml(String(a))}</div>
+        <div class="font-mono text-[12px] tabular-nums truncate" title="${escapeHtml(String(b))}">${escapeHtml(String(b))}</div>`
+        )
+        .join('')}
+    </div>
+    ${
+      result.replay.text
+        ? `<div class="mt-7">
+            <div class="label-eyebrow mb-3">What it said this time</div>
+            <div class="font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap max-h-[260px] overflow-auto">${escapeHtml(
+              result.replay.text
+            )}</div>
+          </div>`
+        : ''
+    }`;
+}
+
+/* ---- export ---- */
+
+/* The captured request as something you can run: the fastest way from "this turn
+   went wrong" to a reproduction outside the harness. */
+function requestAsCurl(turn) {
+  const headers = [
+    `-H 'content-type: application/json'`,
+    `-H 'anthropic-version: 2023-06-01'`,
+    `-H "x-api-key: $ANTHROPIC_API_KEY"`,
+  ];
+  const beta = turn.request && turn.request.anthropicBeta;
+  if (beta) headers.push(`-H 'anthropic-beta: ${beta}'`);
+
+  return [
+    `curl https://api.anthropic.com/v1/messages \\`,
+    ...headers.map((h) => `  ${h} \\`),
+    `  -d @- <<'JSON'`,
+    JSON.stringify(requestBodyOf(turn), null, 2),
+    `JSON`,
+  ].join('\n');
+}
+
+/* Only the fields that are part of a request: the capture also carries the
+   parsed beta list and the headers we kept, which the API would reject. */
+function requestBodyOf(turn) {
+  const source = turn.request || {};
+  const body = {};
+  for (const field of [
+    'model',
+    'max_tokens',
+    'system',
+    'tools',
+    'messages',
+    'thinking',
+    'output_config',
+    'tool_choice',
+    'stop_sequences',
+    'metadata',
+    'temperature',
+    'top_p',
+    'top_k',
+  ]) {
+    if (source[field] != null) body[field] = source[field];
+  }
+  return body;
+}
+
+function wireExportButtons(turn) {
+  const copy = async (button, text) => {
+    const original = button.textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = 'Copied';
+    } catch {
+      button.textContent = 'Failed';
+    }
+    setTimeout(() => (button.textContent = original), 1400);
+  };
+  el('copy-curl').onclick = (e) => copy(e.currentTarget, requestAsCurl(turn));
+  el('copy-request').onclick = (e) => copy(e.currentTarget, JSON.stringify(requestBodyOf(turn), null, 2));
 }
 
 /* --------------------------------------------------------- exact counting */

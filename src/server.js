@@ -17,6 +17,8 @@ const { analyzeThinking } = require('./thinking');
 const { analyzeNetwork } = require('./network');
 const credentials = require('./credentials');
 const { measureTurn } = require('./token-count');
+const { diffTurns } = require('./turn-diff');
+const { replayTurn } = require('./replay');
 const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -33,6 +35,39 @@ bus.setMaxListeners(100);
    requests to produce, so they are worth keeping for the life of the process,
    and they are cheap to produce again after a restart. */
 const measurements = new Map();
+
+/* API requests carry at most a small JSON body; anything larger is a client
+   bug rather than something to buffer. */
+const MAX_BODY_BYTES = 64 * 1024;
+
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8').trim();
+      if (!text) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(text));
+      } catch {
+        reject(new Error('request body is not JSON'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
 
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
@@ -147,6 +182,59 @@ function createServer() {
           withBreakdown(turn, annotations[i].cache, annotations[i].history, annotations[i].prompt)
         );
         sendJson(res, 200, turns);
+        return;
+      }
+
+      /* Any two turns of a session, not just consecutive ones: what accumulated
+         across a span is a different question from what changed on a turn. */
+      const diffMatch = req.method === 'GET' && req.url.match(/^\/api\/sessions\/([^/?]+)\/diff(\?.*)?$/);
+      if (diffMatch) {
+        const sessionId = decodeURIComponent(diffMatch[1]);
+        const params = new URL(req.url, 'http://localhost').searchParams;
+        const turns = store.getTurns(sessionId);
+        const a = turns[Number(params.get('a'))];
+        const b = turns[Number(params.get('b'))];
+        if (!a || !b) {
+          sendJson(res, 404, { error: 'no_such_turn' });
+          return;
+        }
+        sendJson(res, 200, diffTurns(a, b));
+        return;
+      }
+
+      /* Replaying sends a real request upstream and spends the user's quota, so
+         like measuring it only happens because someone asked. The reply is never
+         stored: a replay is an experiment, not something the session did. */
+      const replayMatch = req.method === 'POST' && req.url.match(/^\/api\/sessions\/([^/]+)\/turns\/(\d+)\/replay$/);
+      if (replayMatch) {
+        const sessionId = decodeURIComponent(replayMatch[1]);
+        const turns = store.getTurns(sessionId);
+        const turn = turns[Number(replayMatch[2])];
+        if (!turn) {
+          sendJson(res, 404, { error: 'no_such_turn' });
+          return;
+        }
+        const headers = credentials.headersFor(sessionId);
+        if (!headers) {
+          sendJson(res, 409, {
+            error: 'no_credential',
+            message:
+              'No credential for this session. Replaying needs one: run a turn through the proxy first, or start it with ANTHROPIC_API_KEY set.',
+          });
+          return;
+        }
+        let changes;
+        try {
+          changes = await readJson(req);
+        } catch (err) {
+          sendJson(res, 400, { error: 'bad_request', message: err.message });
+          return;
+        }
+        try {
+          sendJson(res, 200, await replayTurn(turn, changes, turns, headers));
+        } catch (err) {
+          sendJson(res, 502, { error: 'replay_failed', message: err.message, status: err.status || null });
+        }
         return;
       }
 

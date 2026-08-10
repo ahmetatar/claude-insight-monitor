@@ -80,7 +80,7 @@ down. If `settings.json` already holds an `ANTHROPIC_BASE_URL` you set yourself,
 | `CXT_PROXY_HOME` | Where the pid file, log and captures live. Default `~/.cxt-proxy`. Set it per project if you want separate stores. |
 | `CXT_PROXY_PORT` | Port for the proxy process itself; normally set for you by the CLI. |
 | `CXT_PROXY_HOST` | Bind address. Default `127.0.0.1` — set `0.0.0.0` only if you deliberately want it reachable from the network. |
-| `ANTHROPIC_API_KEY` | Optional, and only used by **Measure exactly**. When set, the proxy never reuses Claude Code's own credential for it. |
+| `ANTHROPIC_API_KEY` | Optional, and only used by **Measure exactly** and **Replay**. When set, the proxy never reuses Claude Code's own credential for them. |
 
 ---
 
@@ -142,7 +142,8 @@ a given turn hides itself rather than showing zeroes.
 | **What fills the window** | System prompt vs messages vs tool definitions as a proportion bar, then every individual section ranked by size. Click any section for an inspector with the full text, a tool's parameters and raw schema, or a message's content blocks with their cache markers and per-block counts — each with a copy button. **Measure exactly** replaces the estimates with real counts. | [8](#8--measuring-instead-of-estimating) |
 | **Tool definitions** | Every tool, what its definition costs, how often the model actually called it, and how much came back as results. | [5](#5--what-the-tool-list-costs) |
 | **Inside the system prompt** | The fixed instructions split into their own sections and ranked, plus the `<system-reminder>` blocks injected into the messages. | [4](#4--inside-the-system-prompt) |
-| **Raw JSON** | The complete captured request and response, collapsible. | — |
+| **Time machine** | Compare this turn against any other turn of the same kind, and send it again with the tool list trimmed, the system prompt dropped, or a different model — then read the two side by side. | [10](#10--the-time-machine) |
+| **Raw JSON** | The complete captured request and response, collapsible, plus **Copy as curl** and **Copy request** to reproduce the turn outside the harness. | [10](#10--the-time-machine) |
 
 Token figures in the breakdown are estimates (`chars / 4`) — the API only reports
 usage in aggregate. The four numbers under the ring are the real ones, and
@@ -158,6 +159,8 @@ Everything the page draws is available directly.
 | `GET /api/sessions/<id>/turns` | Every turn, each annotated with `breakdown`, `call`, `cache`, `history`, `prompt`, `thinking` and `network`. |
 | `GET /api/sessions/<id>/tools` | Session-wide tool economics (layer 5). |
 | `GET /api/sessions/<id>/topology` | The session's threads (layer 9). |
+| `GET /api/sessions/<id>/diff?a=<n>&b=<n>` | Structured diff between any two turns (layer 10). |
+| `POST /api/sessions/<id>/turns/<n>/replay` | Re-sends that turn with changes (layer 10). Spends quota; never recorded. |
 | `POST /api/sessions/<id>/turns/<n>/count` | Measures that turn exactly (layer 8). Spends quota; cached after the first call. |
 | `GET /api/events` | SSE: one annotated turn per event, live. |
 | `GET /api/health` | Liveness and total captured turns. |
@@ -195,7 +198,7 @@ and the cards that depend on them hide rather than showing zeroes.
 
 ---
 
-# Part III — The nine layers
+# Part III — The ten layers
 
 Each layer answers one question the raw capture cannot.
 
@@ -210,6 +213,7 @@ Each layer answers one question the raw capture cannot.
 | [7](#7--over-the-wire) | Network | Was it slow to start or slow to speak — and how much quota is left? |
 | [8](#8--measuring-instead-of-estimating) | Exact counting | How wrong is `chars / 4`? |
 | [9](#9--threads) | Topology | What did each subagent spend, and what did it hand back? |
+| [10](#10--the-time-machine) | Time machine | What accumulated between two turns — and what would have happened if it had been sent differently? |
 
 Figures below come from two real captured sessions — 118 turns of the Claude Code
 CLI, and one Agent SDK turn — unless a section says otherwise.
@@ -503,6 +507,64 @@ between them.
 
 ---
 
+## 10 · The time machine
+
+**What it's for.** Every other layer measures what happened. This one answers the
+two questions a capture cannot: what accumulated *between* two turns, and what
+would have happened if the request had been sent differently.
+
+### Compare
+
+The cache and history layers compare a turn with the one immediately before it,
+because that is what the cache does. A different question needs a different
+pairing: what actually piled up between turn 5 and turn 90, which tools appeared
+along the way, which parts of the prompt were rewritten. Pick any other turn *of
+the same kind* — diffing a security check against an agent turn would just report
+that two unrelated prompts differ — and the diff comes back split by messages,
+tool definitions and system prompt, each with its token delta and what changed by
+name.
+
+### Replay
+
+The tool-economics layer raises a question it cannot settle: 58 of those 59 tools
+were never called, so would the turn have gone the same way without them? Reading
+a capture cannot tell you. Sending the request again, minus the tools, can.
+
+Three changes are available — the tool list (as captured / only the ones ever
+called in this session / none), the system prompt (kept or dropped), and the
+model (any model this session used) — and everything not named is sent exactly as
+captured. The result is shown against the original: tools sent, prompt size,
+billed tokens, cost, stop reason, which tools it called this time, and what it
+said.
+
+The block shape usually answers the question before the text does. In a scripted
+session driven through the proxy, dropping the tool list took the prompt from
+2.3K to 1.4K tokens and the cost from $0.0098 to $0.0024 — and changed the stop
+reason from `tool_use` to `end_turn`: without tools the model described the
+command instead of running it.
+
+**It sends a real request and spends real quota**, so like measuring it only runs
+from an explicit click, its output is capped at 4K tokens, and **the reply is
+never written to the capture store** — a replay is an experiment, not something
+the session did. It uses the same in-memory-only credential as
+[layer 8](#8--measuring-instead-of-estimating).
+
+### Export
+
+**Copy as curl** turns the captured request into something runnable — the fastest
+route from "this turn went wrong" to a reproduction outside the harness, with the
+key left as `$ANTHROPIC_API_KEY` rather than baked in. **Copy request** gives the
+body alone, as a fixture. Both send only fields that are part of a request: the
+capture also carries the parsed beta list and the headers we kept, which the API
+would reject.
+
+**Verification.** Driven against a stubbed upstream: the diff reports the right
+deltas across a span where the tool list grew, all three tool modes replay
+correctly, the store still holds only the captured turns afterwards, and the
+credential never appears in the capture file.
+
+---
+
 ## Layout
 
 ```
@@ -523,6 +585,8 @@ src/network.js          layer 7 — latency split, retries, failures, rate limit
 src/token-count.js      layer 8 — exact sizes via four count_tokens calls
 src/credentials.js      layer 8 — in-memory-only auth, used solely for those calls
 src/topology.js         layer 9 — conversation and subagent threads
+src/turn-diff.js        layer 10 — structured diff between any two turns
+src/replay.js           layer 10 — re-sending a captured turn with changes
 
 src/pricing.js          list prices and the cache read/write multipliers
 src/settings-env.js     journalled read/modify/write of ~/.claude/settings.json

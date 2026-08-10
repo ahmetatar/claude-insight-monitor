@@ -212,6 +212,27 @@
 .meter { height: 5px; border-radius: 999px; background: var(--track); overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 999px; }
 
+/* ───────────────────────────────────────────────────────────── controls */
+
+.field {
+  border: 1px solid var(--edge); border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: inherit; padding: 5px 9px;
+  transition: border-color .15s;
+}
+.field:hover, .field:focus { border-color: color-mix(in srgb, var(--accent) 45%, transparent); outline: none; }
+
+/* Original against replay, so the eye compares rows rather than hunting. */
+.compare-grid {
+  display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 18px; align-items: baseline;
+}
+.compare-grid > .head {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim);
+  padding-bottom: 6px; border-bottom: 1px solid var(--edge);
+}
+
 /* ─────────────────────────────────────────────────── ranked stat rows */
 
 .stat-row {
