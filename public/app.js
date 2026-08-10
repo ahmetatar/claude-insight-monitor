@@ -78,17 +78,20 @@ function usageOf(turn) {
   return (turn && turn.response && turn.response.usage) || {};
 }
 
+function callOf(turn) {
+  return (turn && turn.call) || null;
+}
+
 /* Claude Code multiplexes several conversations onto one session id: the agent
-   loop, plus short utility calls (title generation, summaries) that start from
-   an empty history and ship no tool definitions. They are unrelated threads
-   with their own, far smaller context — charting them on one line produced a
-   sawtooth that read as the window collapsing and refilling. Subagents announce
-   themselves with an agent id; the utility calls give themselves away by
-   carrying no tools at all, which the agent loop never does. */
+   loop, its subagents, and short background calls with their own far smaller
+   context. Charting them on one line produced a sawtooth that read as the
+   window collapsing and refilling. The proxy classifies each call from what it
+   sends; the fallback covers captures recorded before it did. */
 function isSideChain(turn) {
+  const call = callOf(turn);
+  if (call) return call.group !== 'main';
   if (turn && turn.agentId) return true;
-  const tools = (turn && turn.request && turn.request.tools) || [];
-  return tools.length === 0;
+  return (((turn && turn.request && turn.request.tools) || []).length) === 0;
 }
 
 /* The main conversation, each turn tagged with its position in the full list so
@@ -271,6 +274,7 @@ function renderDetail() {
   renderRibbon();
   renderGauge(turn);
   renderStats(turn);
+  renderCalls();
   renderCache(turn);
   renderHistory();
   renderBreakdown(turn);
@@ -296,7 +300,9 @@ function renderRibbon() {
     bar.dataset.side = String(isSideChain(t));
     if (!tokens) bar.dataset.error = 'true';
     bar.style.height = `${Math.max(3, (tokens / max) * 34)}px`;
-    bar.title = `#${i + 1} · ${compactNum(tokens)} ctx tokens${isSideChain(t) ? ' · side call' : ''}`;
+    const call = callOf(t);
+    bar.dataset.kind = call ? call.id : '';
+    bar.title = `#${i + 1} · ${compactNum(tokens)} ctx tokens${call ? ` · ${call.label}` : ''}`;
     bar.onclick = () => selectTurn(i);
     ribbon.appendChild(bar);
   });
@@ -310,9 +316,16 @@ function renderRibbon() {
   const follow = el('turn-follow');
   follow.hidden = !state.pinned;
   follow.onclick = () => selectTurn(state.turns.length - 1);
-  el('ribbon-meta').textContent = `${time} · ${turn.request?.model || 'unknown model'}${
-    turn.status && turn.status >= 400 ? ` · HTTP ${turn.status}` : ''
-  }`;
+  const call = callOf(turn);
+  el('ribbon-meta').textContent = [
+    time,
+    turn.request?.model || 'unknown model',
+    call ? call.label : null,
+    call && call.entrypoint ? call.entrypoint : null,
+    turn.status && turn.status >= 400 ? `HTTP ${turn.status}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   const prev = el('turn-prev');
   const next = el('turn-next');
@@ -389,6 +402,93 @@ function renderStats(turn) {
         }">${v == null ? '—' : compactNum(v)}</dd>
       </div>`;
   }).join('');
+}
+
+/* ----------------------------------------------------------------- calls */
+
+/* A third of the requests in a session can be background classifiers that never
+   touch the conversation. They are invisible in a per-turn view and invisible on
+   the bill; this is the one place they are counted. */
+const GROUP_COLOR = {
+  main: 'var(--accent)',
+  subagent: 'var(--signal)',
+  background: 'color-mix(in srgb, var(--dim) 55%, transparent)',
+  meta: 'color-mix(in srgb, var(--dim) 30%, transparent)',
+};
+
+function billedTokens(turn) {
+  const u = usageOf(turn);
+  return Number(u.input_tokens || 0) + Number(u.cache_read_input_tokens || 0) + Number(u.cache_creation_input_tokens || 0);
+}
+
+function renderCalls() {
+  const card = el('calls-card');
+  const classified = state.turns.filter((t) => callOf(t));
+  if (!classified.length) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+
+  const kinds = new Map();
+  for (const turn of state.turns) {
+    const call = callOf(turn);
+    if (!call) continue;
+    let row = kinds.get(call.id);
+    if (!row) {
+      row = { ...call, count: 0, tokensIn: 0, tokensOut: 0, cost: 0, models: new Set() };
+      kinds.set(call.id, row);
+    }
+    row.count += 1;
+    row.tokensIn += billedTokens(turn);
+    row.tokensOut += Number(usageOf(turn).output_tokens || 0);
+    row.cost += turn.cache && turn.cache.cost ? turn.cache.cost.actual : 0;
+    if (turn.request && turn.request.model) row.models.add(turn.request.model);
+  }
+
+  const rows = [...kinds.values()].sort((a, b) => b.cost - a.cost || b.count - a.count);
+  const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
+  const totalCalls = rows.reduce((sum, r) => sum + r.count, 0);
+
+  el('calls-sub').textContent = `${totalCalls} calls · ${rows.length} kind${rows.length === 1 ? '' : 's'}`;
+
+  el('calls-rows').innerHTML = rows
+    .map((r) => {
+      const share = totalCost > 0 ? r.cost / totalCost : 0;
+      return `
+      <div class="call-row">
+        <div class="min-w-0 flex items-center gap-2.5">
+          <span class="dot" style="background:${GROUP_COLOR[r.group] || GROUP_COLOR.background}"></span>
+          <span class="text-[13.5px] font-semibold tracking-tight truncate">${escapeHtml(r.label)}</span>
+          <span class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums shrink-0">×${r.count}</span>
+        </div>
+        <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
+          ${money(r.cost)}
+          <span class="text-dim dark:text-dim-dk">· ${Math.round(share * 100)}%</span>
+        </div>
+        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk truncate">
+          ${escapeHtml(r.note)} · ${[...r.models].join(', ') || '—'}
+        </div>
+        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums text-right shrink-0">
+          ${compactNum(r.tokensIn)} in · ${compactNum(r.tokensOut)} out
+        </div>
+        <div class="call-share"><span style="width:${(share * 100).toFixed(1)}%;background:${GROUP_COLOR[r.group] || GROUP_COLOR.background}"></span></div>
+      </div>`;
+    })
+    .join('');
+
+  const background = rows.filter((r) => r.group === 'background' || r.group === 'meta');
+  const bgCalls = background.reduce((sum, r) => sum + r.count, 0);
+  const bgCost = background.reduce((sum, r) => sum + r.cost, 0);
+  const versions = [...new Set(state.turns.map((t) => callOf(t) && callOf(t).ccVersion).filter(Boolean))];
+
+  el('calls-foot').innerHTML = `
+    <div class="flex flex-wrap items-baseline gap-x-7 gap-y-2 font-mono text-[11px] text-dim dark:text-dim-dk">
+      <span>${bgCalls} of ${totalCalls} calls run beside the conversation${
+        totalCost > 0 ? `, costing ${money(bgCost)} (${Math.round((bgCost / totalCost) * 100)}%)` : ''
+      }</span>
+      ${versions.length ? `<span>claude-cli ${versions.map(escapeHtml).join(', ')}</span>` : ''}
+    </div>`;
 }
 
 /* ----------------------------------------------------------------- cache */

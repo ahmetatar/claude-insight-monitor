@@ -9,6 +9,7 @@ const { handleProxyRequest } = require('./proxy');
 const store = require('./capture-store');
 const { computeBreakdown } = require('./breakdown');
 const { analyzeTurn, analyzeSession, chainKey, CANDIDATE_DEPTH } = require('./cache-forensics');
+const { classify } = require('./call-kinds');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MIME = {
@@ -68,6 +69,7 @@ function withBreakdown(turn, cache) {
   return {
     ...turn,
     breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage),
+    call: classify(turn),
     cache,
   };
 }

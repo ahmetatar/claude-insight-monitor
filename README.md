@@ -117,7 +117,8 @@ key. Three safeguards:
 <http://localhost:8787> — one page, live over SSE.
 
 - **Sessions rail** — every captured session, newest first.
-- **Turn ribbon** — one bar per turn, height = context tokens. Click to jump;
+- **Turn ribbon** — one bar per turn, height = context tokens. Background calls
+  are drawn as outlines so the eye follows the agent loop. Click to jump;
   `←`/`→` (or `j`/`k`) also work.
 - **Context window** — a ring showing how full the window is, split by input /
   cache read / cache write, against the model's real limit (1M variants are
@@ -130,6 +131,8 @@ key. Three safeguards:
   (type, required, docs) and raw JSON schema; a message's content blocks with
   their types, cache markers and per-block token counts. Every block has a copy
   button. `Esc` closes it.
+- **Where the calls go** — every request sorted into what it actually is, with
+  its share of the session's spend. See below.
 - **Cache** — why the prompt cache behaved the way it did on this turn. A
   verdict (prefix hit / partial hit / miss / cold start), the prefix drawn in
   token space with its cache breakpoints and the exact point where it stopped
@@ -141,6 +144,33 @@ Token figures in the breakdown are estimates (`chars / 4`); the API only reports
 usage in aggregate. The four numbers under the ring are the real ones.
 
 ---
+
+## What the calls actually are
+
+One session id is not one conversation. Claude Code multiplexes the agent loop,
+its subagents, and a fleet of short background calls onto the same id — in a
+118-turn session captured here, 43 of them were security classifiers that
+evaluate a shell command before the Bash tool runs it, and never touch the
+conversation at all. Averaged into one chart they read as the context window
+collapsing and refilling; averaged into one bill they are invisible.
+
+Each request is sorted by what it sends:
+
+| Kind | Recognised by |
+| --- | --- |
+| agent loop | Tool definitions present — the conversation whose window the UI tracks. |
+| subagent | An `x-claude-code-agent-id` header; its own context window. |
+| bash security check | A system prompt that opens "You are a security monitor for autonomous AI coding agents". |
+| session title | The title-generation prompt, run once to name the session. |
+| compaction | A toolless call asking for a summary of the conversation. |
+| quota probe | A one-token request whose entire body is the word `quota` — the startup reachability check. |
+| token count | A `/v1/messages/count_tokens` call: Claude Code sizing the window before it sends. |
+| utility call | Anything else with no tools. Its opening line is kept so an unrecognised kind is still identifiable rather than silently bucketed. |
+
+Claude Code also prepends its own billing header as the first system block
+(`cc_version=2.1.226.06d; cc_entrypoint=cli;`), so each capture records the CLI
+build that produced it and whether it came from the terminal (`cli`) or the
+Agent SDK (`sdk-cli`).
 
 ## Cache forensics
 
@@ -207,6 +237,7 @@ src/server.js         static files + /api/sessions, /api/events (SSE), /api/heal
 src/capture-store.js  append-only JSONL store, one file per session
 src/breakdown.js      per-section size estimates for a request body
 src/cache-forensics.js  prefix diffing: what broke the cache, and what it cost
+src/call-kinds.js     sorts each request into agent loop / subagent / background
 src/pricing.js        list prices and the cache read/write multipliers
 src/settings-env.js   journalled read/modify/write of ~/.claude/settings.json
 public/               the UI (no build step — Tailwind + Chart.js from CDN)
