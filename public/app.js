@@ -1,0 +1,1038 @@
+'use strict';
+
+const DARK = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+const THEME = DARK
+  ? { ink: '#EFEEF4', dim: '#848A9C', edge: '#20232B', panel: '#101216', accent: '#E8825C' }
+  : { ink: '#14151A', dim: '#6A6E7E', edge: '#E2E2EA', panel: '#FFFFFF', accent: '#C4562F' };
+
+const SERIES = [
+  { key: 'input_tokens', label: 'input', color: DARK ? '#7C9BFF' : '#4A6FE3' },
+  { key: 'cache_creation_input_tokens', label: 'cache write', color: DARK ? '#E8825C' : '#C4562F' },
+  { key: 'cache_read_input_tokens', label: 'cache read', color: DARK ? '#4FC0AE' : '#2F7F76' },
+  { key: 'output_tokens', label: 'output', color: DARK ? '#E3B44A' : '#B98407' },
+];
+
+/* Everything the model had to read this turn — the three input-side series. */
+const CONTEXT_KEYS = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+
+const GROUP_COLORS = {
+  'System prompt': SERIES[1].color,
+  Messages: SERIES[0].color,
+  'Tool definitions': SERIES[2].color,
+};
+
+const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace';
+
+const state = {
+  sessions: [],
+  sessionId: null,
+  turns: [],
+  turnIndex: -1,
+  /* True once the user picks a turn other than the newest one: live turns keep
+     streaming in, but the selection stays put instead of jumping to the tail. */
+  pinned: false,
+  /* sessionId whose delete button is armed — the second click is the one that
+     actually deletes, so a stray click can never drop a capture. */
+  pendingDelete: null,
+  /* Set when a delete came back without a verdict, so the row can say so
+     instead of quietly pretending the capture is gone. */
+  deleteError: null,
+  breakdownOpen: false,
+  breakdownFilter: '',
+};
+
+let historyChart = null;
+
+const el = (id) => document.getElementById(id);
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  return res.json();
+}
+
+function relativeTime(iso) {
+  if (!iso) return '—';
+  const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 5) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+function compactNum(n) {
+  if (n == null) return '—';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function usageOf(turn) {
+  return (turn && turn.response && turn.response.usage) || {};
+}
+
+/* Claude Code multiplexes several conversations onto one session id: the agent
+   loop, plus short utility calls (title generation, summaries) that start from
+   an empty history and ship no tool definitions. They are unrelated threads
+   with their own, far smaller context — charting them on one line produced a
+   sawtooth that read as the window collapsing and refilling. Subagents announce
+   themselves with an agent id; the utility calls give themselves away by
+   carrying no tools at all, which the agent loop never does. */
+function isSideChain(turn) {
+  if (turn && turn.agentId) return true;
+  const tools = (turn && turn.request && turn.request.tools) || [];
+  return tools.length === 0;
+}
+
+/* The main conversation, each turn tagged with its position in the full list so
+   the chart can still address turns by their real number. */
+function mainChain() {
+  return state.turns.map((turn, index) => ({ turn, index })).filter((p) => !isSideChain(p.turn));
+}
+
+function contextTokens(turn) {
+  const u = usageOf(turn);
+  return CONTEXT_KEYS.reduce((sum, k) => sum + Number(u[k] || 0), 0);
+}
+
+/* The 1M window is negotiated via the anthropic-beta header, not the model id:
+   Claude Code's "[1m]" suffix is an internal alias and never reaches the wire
+   (the body carries a plain "claude-opus-5"). The model id is kept only as a
+   fallback for captures recorded before the header was stored. */
+function contextLimit(turn) {
+  const beta = String((turn && turn.request && turn.request.anthropicBeta) || '');
+  if (/context-1m/i.test(beta)) return 1_000_000;
+  const model = String((turn && turn.request && turn.request.model) || '');
+  return /\[1m\]|-1m\b|1m\]/i.test(model) ? 1_000_000 : 200_000;
+}
+
+/* --------------------------------------------------------------- data */
+
+async function loadSessions() {
+  state.sessions = await fetchJson('/api/sessions');
+  renderSessionList();
+  if (!state.sessionId && state.sessions.length) {
+    selectSession(state.sessions[0].sessionId);
+  } else if (!state.sessions.length) {
+    renderDetail();
+  }
+}
+
+async function selectSession(sessionId) {
+  state.sessionId = sessionId;
+  state.turns = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/turns`);
+  state.turnIndex = state.turns.length - 1;
+  state.pinned = false;
+  renderSessionList();
+  renderDetail();
+}
+
+function selectTurn(i) {
+  if (i < 0 || i >= state.turns.length) return;
+  state.turnIndex = i;
+  /* Picking the newest turn is how you get back to following the tail. */
+  state.pinned = i !== state.turns.length - 1;
+  renderDetail();
+}
+
+/* A live turn arrived while the user is pinned to an older one: refresh only the
+   parts that describe the session as a whole. The detail panes and the drawer
+   belong to the pinned turn and must survive untouched. */
+function renderLiveTail() {
+  if (!state.turns[state.turnIndex]) return;
+  renderRibbon();
+  renderHistory();
+}
+
+/* -------------------------------------------------------- session rail */
+
+async function deleteSession(sessionId) {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+
+  /* Only a JSON body from the delete route counts as an answer. A bare 404 is
+     what the static handler returns for a route it does not know — which is
+     exactly what a server running from before this endpoint existed replies —
+     and treating that as "already gone" made the row vanish while the capture
+     stayed on disk, only to return on the next refresh. */
+  const body = await res.json().catch(() => null);
+  if (!body || typeof body.deleted !== 'boolean') {
+    throw new Error(`DELETE /api/sessions returned ${res.status} with no verdict — is the proxy running the current build?`);
+  }
+
+  state.pendingDelete = null;
+  state.sessions = state.sessions.filter((s) => s.sessionId !== sessionId);
+
+  if (state.sessionId === sessionId) {
+    /* The open session just went away — fall back to the newest survivor. */
+    if (state.sessions.length) {
+      await selectSession(state.sessions[0].sessionId);
+    } else {
+      state.sessionId = null;
+      state.turns = [];
+      state.turnIndex = -1;
+      state.pinned = false;
+      renderDetail();
+    }
+  }
+  renderSessionList();
+  refreshTurnCount();
+}
+
+function renderSessionList() {
+  const ul = el('session-list');
+  if (!state.sessions.length) {
+    ul.innerHTML = `<li class="px-3 py-2 text-[11.5px] leading-relaxed text-dim dark:text-dim-dk">
+      No sessions yet. Send a prompt through the proxy to see it here.</li>`;
+    return;
+  }
+  ul.innerHTML = '';
+  for (const s of state.sessions) {
+    const active = s.sessionId === state.sessionId;
+    const li = document.createElement('li');
+    li.className = 'session-row';
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'session-card';
+    card.dataset.active = String(active);
+    card.innerHTML = `
+      <span class="block font-mono text-[11.5px] truncate ${
+        active ? 'text-accent dark:text-accent-dk font-semibold' : 'text-ink dark:text-ink-dk'
+      }">${escapeHtml(s.sessionId)}</span>
+      <span class="mt-1 flex justify-between text-[10.5px] tabular-nums text-dim dark:text-dim-dk">
+        <span>${s.turnCount} turn${s.turnCount === 1 ? '' : 's'}</span>
+        <span>${escapeHtml(relativeTime(s.lastActiveAt))}</span>
+      </span>`;
+    card.onclick = () => {
+      state.pendingDelete = null;
+      state.deleteError = null;
+      selectSession(s.sessionId);
+    };
+
+    const armed = state.pendingDelete === s.sessionId;
+    const failed = state.deleteError && state.deleteError.sessionId === s.sessionId;
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'session-del';
+    del.dataset.armed = String(armed || failed);
+    del.textContent = failed ? 'failed' : armed ? 'delete?' : '✕';
+    del.title = failed
+      ? state.deleteError.message
+      : armed
+        ? 'Click again to delete this session for good'
+        : 'Delete this session';
+    del.onclick = (ev) => {
+      ev.stopPropagation(); // never let the row-select fire underneath
+      if (armed) {
+        deleteSession(s.sessionId).catch((err) => {
+          console.error(err);
+          state.pendingDelete = null;
+          state.deleteError = { sessionId: s.sessionId, message: err.message };
+          renderSessionList();
+        });
+      } else {
+        state.pendingDelete = s.sessionId;
+        renderSessionList();
+      }
+    };
+
+    li.appendChild(card);
+    li.appendChild(del);
+    ul.appendChild(li);
+  }
+}
+
+/* --------------------------------------------------------------- detail */
+
+function renderDetail() {
+  const container = el('detail');
+  container.innerHTML = '';
+  closeDrawer(); // its content belongs to the turn being replaced
+
+  if (historyChart) {
+    historyChart.destroy();
+    historyChart = null;
+  }
+
+  const turn = state.turns[state.turnIndex];
+  if (!turn) {
+    container.appendChild(el('tpl-empty').content.cloneNode(true));
+    return;
+  }
+
+  container.appendChild(el('tpl-detail').content.cloneNode(true));
+
+  renderRibbon();
+  renderGauge(turn);
+  renderStats(turn);
+  renderHistory();
+  renderBreakdown(turn);
+  renderJson(el('json-view'), { request: turn.request, response: turn.response });
+
+  el('json-expand').onclick = () => container.querySelectorAll('.json-view details').forEach((d) => (d.open = true));
+  el('json-collapse').onclick = () => container.querySelectorAll('.json-view details').forEach((d, i) => (d.open = i === 0));
+}
+
+/* --------------------------------------------------------- turn ribbon */
+
+function renderRibbon() {
+  const ribbon = el('ribbon');
+  const max = Math.max(1, ...state.turns.map(contextTokens));
+
+  ribbon.innerHTML = '';
+  state.turns.forEach((t, i) => {
+    const tokens = contextTokens(t);
+    const bar = document.createElement('button');
+    bar.type = 'button';
+    bar.className = 'ribbon-bar';
+    bar.dataset.active = String(i === state.turnIndex);
+    bar.dataset.side = String(isSideChain(t));
+    if (!tokens) bar.dataset.error = 'true';
+    bar.style.height = `${Math.max(3, (tokens / max) * 34)}px`;
+    bar.title = `#${i + 1} · ${compactNum(tokens)} ctx tokens${isSideChain(t) ? ' · side call' : ''}`;
+    bar.onclick = () => selectTurn(i);
+    ribbon.appendChild(bar);
+  });
+
+  const active = ribbon.children[state.turnIndex];
+  if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+  const turn = state.turns[state.turnIndex];
+  const time = turn.timestamp ? new Date(turn.timestamp).toLocaleTimeString() : '—';
+  el('ribbon-title').textContent = `Turn ${state.turnIndex + 1} / ${state.turns.length}`;
+  const follow = el('turn-follow');
+  follow.hidden = !state.pinned;
+  follow.onclick = () => selectTurn(state.turns.length - 1);
+  el('ribbon-meta').textContent = `${time} · ${turn.request?.model || 'unknown model'}${
+    turn.status && turn.status >= 400 ? ` · HTTP ${turn.status}` : ''
+  }`;
+
+  const prev = el('turn-prev');
+  const next = el('turn-next');
+  prev.disabled = state.turnIndex <= 0;
+  next.disabled = state.turnIndex >= state.turns.length - 1;
+  prev.onclick = () => selectTurn(state.turnIndex - 1);
+  next.onclick = () => selectTurn(state.turnIndex + 1);
+}
+
+/* --------------------------------------------------------- context gauge */
+
+const GAUGE_R = 66;
+const GAUGE_C = 2 * Math.PI * GAUGE_R;
+
+function renderGauge(turn) {
+  const svg = el('gauge');
+  const usage = usageOf(turn);
+  const limit = contextLimit(turn);
+  const used = contextTokens(turn);
+
+  const ns = 'http://www.w3.org/2000/svg';
+  svg.innerHTML = '';
+
+  const track = document.createElementNS(ns, 'circle');
+  track.setAttribute('cx', '80');
+  track.setAttribute('cy', '80');
+  track.setAttribute('r', String(GAUGE_R));
+  track.setAttribute('fill', 'none');
+  track.setAttribute('stroke', THEME.edge);
+  track.setAttribute('stroke-width', '13');
+  svg.appendChild(track);
+
+  let offset = 0;
+  for (const s of CONTEXT_KEYS.map((k) => SERIES.find((x) => x.key === k))) {
+    const value = Number(usage[s.key] || 0);
+    if (!value) continue;
+    const frac = Math.min(1, value / limit);
+    const len = frac * GAUGE_C;
+    const arc = document.createElementNS(ns, 'circle');
+    arc.setAttribute('cx', '80');
+    arc.setAttribute('cy', '80');
+    arc.setAttribute('r', String(GAUGE_R));
+    arc.setAttribute('fill', 'none');
+    arc.setAttribute('stroke', s.color);
+    arc.setAttribute('stroke-width', '13');
+    arc.setAttribute('stroke-linecap', 'round');
+    arc.setAttribute('stroke-dasharray', `${Math.max(0, len - 2)} ${GAUGE_C}`);
+    arc.setAttribute('stroke-dashoffset', String(-offset));
+    arc.innerHTML = `<title>${escapeHtml(s.label)}: ${compactNum(value)}</title>`;
+    svg.appendChild(arc);
+    offset += len;
+  }
+
+  const pct = (used / limit) * 100;
+  el('gauge-pct').textContent = used ? `${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%` : '—';
+  el('gauge-cap').textContent = `${compactNum(used)} of ${compactNum(limit)} ctx`;
+  el('context-sub').textContent = `${turn.request?.model || 'unknown model'} · ${compactNum(limit)} limit`;
+}
+
+/* ------------------------------------------------------------ stat tiles */
+
+function renderStats(turn) {
+  const usage = usageOf(turn);
+  el('usage-stats').innerHTML = SERIES.map((s) => {
+    const v = usage[s.key];
+    return `
+      <div class="min-w-0">
+        <dt class="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk">
+          <span class="w-1.5 h-1.5 rounded-full inline-block shrink-0" style="background:${s.color}"></span>
+          <span class="truncate">${escapeHtml(s.label)}</span>
+        </dt>
+        <dd class="m-0 mt-2.5 text-[30px] font-semibold tracking-[-0.035em] tabular-nums leading-none ${
+          v == null ? 'text-dim dark:text-dim-dk' : ''
+        }">${v == null ? '—' : compactNum(v)}</dd>
+      </div>`;
+  }).join('');
+}
+
+/* ---------------------------------------------------------- history chart */
+
+/* Redraws the trend from scratch — Chart.js keeps a live handle on the canvas,
+   so the old instance has to go before a new one can claim it. */
+function renderHistory() {
+  const points = mainChain();
+  const side = state.turns.length - points.length;
+  el('history-sub').textContent =
+    `${points.length} turn${points.length === 1 ? '' : 's'} in session` +
+    (side ? ` · ${side} side call${side === 1 ? '' : 's'} excluded` : '');
+  if (historyChart) {
+    historyChart.destroy();
+    historyChart = null;
+  }
+  renderHistoryChart(points);
+}
+
+function renderHistoryChart(points) {
+  const canvas = el('history-canvas');
+  if (!canvas || typeof Chart === 'undefined') return;
+
+  const turns = points.map((p) => p.turn);
+  const labels = points.map((p) => `#${p.index + 1}`);
+  const datasets = SERIES.map((s) => ({
+    label: s.label,
+    data: turns.map((t) => Number(usageOf(t)[s.key] || 0)),
+    borderColor: s.color,
+    backgroundColor: s.color + (DARK ? '2b' : '22'),
+    pointBackgroundColor: s.color,
+    pointBorderColor: THEME.panel,
+    pointBorderWidth: 2,
+    pointRadius: turns.length === 1 ? 3.5 : 0,
+    pointHoverRadius: 4,
+    borderWidth: 1.75,
+    tension: 0.35,
+    fill: true,
+  }));
+
+  historyChart = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      onClick: (_evt, items) => {
+        const point = items.length && points[items[0].index];
+        if (point) selectTurn(point.index);
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          align: 'start',
+          labels: {
+            color: THEME.dim,
+            font: { family: MONO, size: 10.5 },
+            boxWidth: 8,
+            boxHeight: 8,
+            usePointStyle: true,
+            pointStyle: 'circle',
+            padding: 18,
+          },
+        },
+        tooltip: {
+          backgroundColor: THEME.panel,
+          titleColor: THEME.dim,
+          bodyColor: THEME.ink,
+          borderColor: THEME.edge,
+          borderWidth: 1,
+          padding: 11,
+          cornerRadius: 9,
+          displayColors: true,
+          usePointStyle: true,
+          titleFont: { family: MONO, size: 10 },
+          bodyFont: { family: MONO, size: 11 },
+          callbacks: {
+            title: (items) => `turn ${items[0]?.label ?? ''}`,
+            label: (item) => ` ${item.dataset.label}: ${compactNum(item.parsed.y)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          border: { color: THEME.edge },
+          ticks: { color: THEME.dim, font: { family: MONO, size: 9.5 }, maxRotation: 0, autoSkipPadding: 24 },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: THEME.edge, drawTicks: false },
+          border: { display: false },
+          ticks: { color: THEME.dim, font: { family: MONO, size: 9.5 }, padding: 10, callback: (v) => compactNum(v) },
+        },
+      },
+    },
+  });
+}
+
+/* ------------------------------------------------------------ breakdown */
+
+function groupSections(sections) {
+  const groups = [
+    { name: 'System prompt', match: (l) => l === 'system prompt', chars: 0, count: 0 },
+    { name: 'Messages', match: (l) => l.startsWith('message['), chars: 0, count: 0 },
+    { name: 'Tool definitions', match: (l) => l.startsWith('tool:'), chars: 0, count: 0 },
+  ];
+  for (const s of sections) {
+    const g = groups.find((g) => g.match(s.label));
+    if (g) {
+      g.chars += s.chars;
+      g.count += 1;
+    }
+  }
+  return groups.filter((g) => g.count > 0);
+}
+
+function renderBreakdown(turn) {
+  const breakdown = turn.breakdown;
+  const barEl = el('composition-bar');
+  const legendEl = el('composition-legend');
+  const detailEl = el('breakdown-detail');
+
+  el('breakdown-sub').textContent = breakdown ? `~${compactNum(breakdown.totalApproxTokens)} tok estimated from the request body` : '';
+
+  if (!breakdown || !breakdown.sections.length) {
+    barEl.innerHTML = '';
+    legendEl.innerHTML = '';
+    detailEl.innerHTML = '<p class="text-[12px] text-dim dark:text-dim-dk">No request body captured for this turn.</p>';
+    return;
+  }
+
+  const groups = groupSections(breakdown.sections);
+  const total = Math.max(1, groups.reduce((sum, g) => sum + g.chars, 0));
+
+  barEl.innerHTML = groups
+    .map((g) => {
+      const color = GROUP_COLORS[g.name] || THEME.dim;
+      const pct = (g.chars / total) * 100;
+      return `<span class="comp-seg" style="width:${pct}%;background:${color}" title="${escapeHtml(g.name)} — ${pct.toFixed(
+        1
+      )}%"></span>`;
+    })
+    .join('');
+
+  legendEl.innerHTML = groups
+    .map((g) => {
+      const color = GROUP_COLORS[g.name] || THEME.dim;
+      const pct = (g.chars / total) * 100;
+      return `
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="w-1.5 h-1.5 rounded-full inline-block shrink-0" style="background:${color}"></span>
+            <span class="text-[12.5px] font-semibold truncate">${escapeHtml(g.name)}</span>
+            <span class="ml-auto font-mono text-[11px] tabular-nums text-dim dark:text-dim-dk">${pct.toFixed(0)}%</span>
+          </div>
+          <div class="mt-2.5 text-[21px] font-semibold tracking-[-0.03em] tabular-nums leading-none">${compactNum(
+            Math.round(g.chars / 4)
+          )}<span class="ml-1 text-[11px] font-normal text-dim dark:text-dim-dk">tok</span></div>
+          <div class="mt-1.5 font-mono text-[10.5px] text-dim dark:text-dim-dk">${g.count} item${g.count === 1 ? '' : 's'}</div>
+        </div>`;
+    })
+    .join('');
+
+  /* ---- expandable per-section list --------------------------------- */
+
+  detailEl.innerHTML = '';
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'ghost-btn';
+  toggle.innerHTML = `${state.breakdownOpen ? '▾' : '▸'}&nbsp; ${breakdown.sections.length} individual sections`;
+  detailEl.appendChild(toggle);
+
+  const panel = document.createElement('div');
+  panel.className = `mt-5 ${state.breakdownOpen ? '' : 'hidden'}`;
+
+  const filterInput = document.createElement('input');
+  filterInput.type = 'text';
+  filterInput.placeholder = 'Filter sections — e.g. "tool: Bash"';
+  filterInput.value = state.breakdownFilter;
+  filterInput.className =
+    'w-full mb-5 px-3 py-2 rounded-lg border border-edge dark:border-edge-dk bg-panel dark:bg-panel-dk font-mono text-[11.5px] text-ink dark:text-ink-dk placeholder:text-dim dark:placeholder:text-dim-dk focus:outline-none focus:border-accent dark:focus:border-accent-dk';
+
+  const rowsEl = document.createElement('div');
+  rowsEl.className = 'flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-2';
+
+  function colorFor(label) {
+    if (label === 'system prompt') return GROUP_COLORS['System prompt'];
+    if (label.startsWith('tool:')) return GROUP_COLORS['Tool definitions'];
+    return GROUP_COLORS.Messages;
+  }
+
+  function renderRows() {
+    const sorted = [...breakdown.sections].sort((a, b) => b.chars - a.chars);
+    const filter = state.breakdownFilter.toLowerCase();
+    const filtered = filter ? sorted.filter((s) => s.label.toLowerCase().includes(filter)) : sorted;
+    const maxChars = Math.max(1, ...sorted.map((s) => s.chars));
+
+    rowsEl.innerHTML = '';
+    if (!filtered.length) {
+      rowsEl.innerHTML = '<p class="text-[11.5px] text-dim dark:text-dim-dk">No sections match.</p>';
+      return;
+    }
+    for (const s of filtered) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'section-row min-w-0';
+      row.innerHTML = `
+        <div class="flex items-baseline gap-3 mb-1.5 min-w-0">
+          <span class="font-mono text-[11px] text-dim dark:text-dim-dk truncate" title="${escapeHtml(s.label)}">${escapeHtml(
+        s.label
+      )}</span>
+          <span class="ml-auto font-mono text-[11px] tabular-nums whitespace-nowrap">${compactNum(s.approxTokens)} tok</span>
+          <span class="row-chevron font-mono text-[11px] text-accent dark:text-accent-dk">›</span>
+        </div>
+        <div class="meter"><span style="width:${(s.chars / maxChars) * 100}%;background:${colorFor(s.label)}"></span></div>`;
+      row.onclick = () => openDrawer(s, breakdown);
+      rowsEl.appendChild(row);
+    }
+  }
+  renderRows();
+
+  filterInput.oninput = () => {
+    state.breakdownFilter = filterInput.value;
+    renderRows();
+  };
+
+  panel.append(filterInput, rowsEl);
+  detailEl.appendChild(panel);
+
+  toggle.onclick = () => {
+    state.breakdownOpen = !state.breakdownOpen;
+    toggle.innerHTML = `${state.breakdownOpen ? '▾' : '▸'}&nbsp; ${breakdown.sections.length} individual sections`;
+    panel.classList.toggle('hidden', !state.breakdownOpen);
+  };
+}
+
+/* ------------------------------------------------------ section drawer */
+
+/* Sections only carry a label + size. Everything worth reading — a tool's
+   description and schema, a message's content blocks — lives in the captured
+   request, so resolve back into it. `kind`/`index` come from newer captures;
+   older ones fall back to parsing the label. */
+function resolveSection(section) {
+  const req = (state.turns[state.turnIndex] || {}).request || {};
+  const label = section.label;
+  let kind = section.kind;
+  let index = section.index;
+
+  if (!kind) {
+    if (label === 'system prompt') kind = 'system';
+    else if (/^message\[(\d+)\]/.test(label)) {
+      kind = 'message';
+      index = Number(label.match(/^message\[(\d+)\]/)[1]);
+    } else if (label.startsWith('tool: ')) kind = 'tool';
+  }
+
+  if (kind === 'system') return { kind, data: req.system };
+  if (kind === 'message') return { kind, index, data: (req.messages || [])[index] };
+  if (kind === 'tool') {
+    const tools = req.tools || [];
+    const name = label.startsWith('tool: ') ? label.slice(6) : null;
+    const data = tools[index] && (!name || (tools[index].name || '(unnamed)') === name)
+      ? tools[index]
+      : tools.find((t) => (t.name || '(unnamed)') === name);
+    return { kind, data };
+  }
+  return { kind: 'unknown', data: null };
+}
+
+function block(title, node, opts = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'min-w-0';
+
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-3 mb-2.5';
+  head.innerHTML = `<span class="label-eyebrow">${escapeHtml(title)}</span>`;
+
+  const right = document.createElement('div');
+  right.className = 'ml-auto flex items-center gap-1.5';
+  head.appendChild(right);
+
+  if (opts.chips) {
+    for (const c of opts.chips) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      if (c.tone) chip.dataset.tone = c.tone;
+      chip.textContent = c.text;
+      right.appendChild(chip);
+    }
+  }
+  if (opts.copy != null) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ghost-btn';
+    btn.textContent = 'Copy';
+    btn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(opts.copy);
+        btn.textContent = 'Copied';
+        setTimeout(() => (btn.textContent = 'Copy'), 1400);
+      } catch {
+        btn.textContent = 'Failed';
+        setTimeout(() => (btn.textContent = 'Copy'), 1400);
+      }
+    };
+    right.appendChild(btn);
+  }
+
+  wrap.append(head, node);
+  return wrap;
+}
+
+function textPanel(text, { clamp = false } = {}) {
+  const box = document.createElement('div');
+  box.className = `prose-block${clamp ? ' is-clamped' : ''}`;
+  const pre = document.createElement('pre');
+  pre.textContent = text;
+  box.appendChild(pre);
+
+  if (clamp) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'ghost-btn w-full rounded-none border-x-0 border-b-0';
+    more.textContent = 'Show full text';
+    more.onclick = () => {
+      box.classList.remove('is-clamped');
+      more.remove();
+    };
+    box.appendChild(more);
+  }
+  return box;
+}
+
+function jsonPanel(value) {
+  const box = document.createElement('div');
+  box.className = 'json-view prose-block font-mono text-[11.5px] leading-[1.7] p-4 max-h-[340px] overflow-auto';
+  box.appendChild(jsonNode(value, true));
+  return box;
+}
+
+function textOf(value) {
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+}
+
+function charsOf(value) {
+  if (value == null) return 0;
+  return typeof value === 'string' ? value.length : JSON.stringify(value).length;
+}
+
+function renderToolDetail(body, tool) {
+  if (tool.description) {
+    body.appendChild(
+      block('Description', textPanel(tool.description, { clamp: tool.description.length > 900 }), {
+        chips: [{ text: `${compactNum(Math.round(tool.description.length / 4))} tok` }],
+        copy: tool.description,
+      })
+    );
+  }
+
+  const schema = tool.input_schema || {};
+  const props = schema.properties || {};
+  const required = new Set(schema.required || []);
+  const names = Object.keys(props);
+
+  if (names.length) {
+    const list = document.createElement('div');
+    list.className = 'flex flex-col divide-y divide-edge dark:divide-edge-dk border border-edge dark:border-edge-dk rounded-xl overflow-hidden';
+    for (const name of names) {
+      const p = props[name] || {};
+      const type = p.type || (p.enum ? 'enum' : p.anyOf ? 'anyOf' : p.oneOf ? 'oneOf' : '—');
+      const rowNode = document.createElement('div');
+      rowNode.className = 'px-4 py-3';
+      rowNode.innerHTML = `
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-mono text-[12px] font-semibold">${escapeHtml(name)}</span>
+          <span class="chip">${escapeHtml(Array.isArray(type) ? type.join(' | ') : String(type))}</span>
+          ${required.has(name) ? '<span class="chip" data-tone="accent">required</span>' : ''}
+        </div>
+        ${
+          p.description
+            ? `<p class="mt-1.5 text-[11.5px] leading-relaxed text-dim dark:text-dim-dk">${escapeHtml(
+                String(p.description).slice(0, 400)
+              )}${String(p.description).length > 400 ? '…' : ''}</p>`
+            : ''
+        }`;
+      list.appendChild(rowNode);
+    }
+    body.appendChild(
+      block('Parameters', list, {
+        chips: [{ text: `${names.length} · ${required.size} required` }],
+      })
+    );
+  }
+
+  body.appendChild(
+    block('Input schema', jsonPanel(schema), {
+      chips: [{ text: `${compactNum(Math.round(charsOf(schema) / 4))} tok` }],
+      copy: JSON.stringify(schema, null, 2),
+    })
+  );
+}
+
+function renderContentBlocks(body, content, title) {
+  if (content == null) {
+    body.appendChild(block(title, textPanel('(empty)')));
+    return;
+  }
+  if (typeof content === 'string') {
+    body.appendChild(
+      block(title, textPanel(content, { clamp: content.length > 1200 }), {
+        chips: [{ text: `${compactNum(Math.round(content.length / 4))} tok` }],
+        copy: content,
+      })
+    );
+    return;
+  }
+  const blocks = Array.isArray(content) ? content : [content];
+  blocks.forEach((b, i) => {
+    const type = (b && b.type) || 'unknown';
+    const chips = [{ text: type, tone: type === 'tool_use' ? 'accent' : type === 'tool_result' ? 'signal' : undefined }];
+    if (b && b.cache_control) chips.push({ text: `cache: ${b.cache_control.type || 'on'}`, tone: 'signal' });
+    if (b && b.is_error) chips.push({ text: 'error', tone: 'accent' });
+    chips.push({ text: `${compactNum(Math.round(charsOf(b) / 4))} tok` });
+
+    let node;
+    if (type === 'text' || type === 'thinking') {
+      const t = b.text || b.thinking || '';
+      node = textPanel(t, { clamp: t.length > 1200 });
+    } else if (type === 'tool_use') {
+      const wrap = document.createElement('div');
+      wrap.className = 'flex flex-col gap-2';
+      wrap.innerHTML = `<div class="font-mono text-[12px] font-semibold">${escapeHtml(b.name || '(unnamed)')}</div>`;
+      wrap.appendChild(jsonPanel(b.input ?? {}));
+      node = wrap;
+    } else if (type === 'tool_result') {
+      const wrap = document.createElement('div');
+      wrap.className = 'flex flex-col gap-2';
+      if (b.tool_use_id) {
+        wrap.innerHTML = `<div class="font-mono text-[10.5px] text-dim dark:text-dim-dk">for ${escapeHtml(b.tool_use_id)}</div>`;
+      }
+      const inner = b.content;
+      const flat =
+        typeof inner === 'string'
+          ? inner
+          : Array.isArray(inner)
+          ? inner.map((x) => (x && x.type === 'text' ? x.text : textOf(x))).join('\n')
+          : textOf(inner);
+      wrap.appendChild(textPanel(flat, { clamp: flat.length > 1200 }));
+      node = wrap;
+    } else {
+      node = jsonPanel(b);
+    }
+
+    body.appendChild(block(`${title} · block[${i}]`, node, { chips, copy: textOf(b) }));
+  });
+}
+
+function openDrawer(section, breakdown) {
+  const drawer = el('drawer');
+  const resolved = resolveSection(section);
+  const body = el('drawer-body');
+
+  el('drawer-kind').textContent =
+    resolved.kind === 'tool' ? 'Tool definition' : resolved.kind === 'system' ? 'System prompt' : resolved.kind === 'message' ? 'Message' : 'Section';
+  el('drawer-title').textContent = section.label;
+
+  const share = breakdown && breakdown.totalChars ? (section.chars / breakdown.totalChars) * 100 : 0;
+  el('drawer-stats').innerHTML = [
+    ['approx tokens', compactNum(section.approxTokens)],
+    ['characters', compactNum(section.chars)],
+    ['of request', `${share < 1 ? share.toFixed(1) : Math.round(share)}%`],
+  ]
+    .map(([k, v]) => `<div class="drawer-stat"><dt>${k}</dt><dd>${escapeHtml(v)}</dd></div>`)
+    .join('');
+
+  body.innerHTML = '';
+
+  if (!resolved.data) {
+    body.appendChild(textPanel('This section could not be resolved back to the captured request body.'));
+  } else if (resolved.kind === 'tool') {
+    renderToolDetail(body, resolved.data);
+  } else if (resolved.kind === 'system') {
+    renderContentBlocks(body, resolved.data, 'System');
+  } else if (resolved.kind === 'message') {
+    const msg = resolved.data;
+    const roleRow = document.createElement('div');
+    roleRow.className = 'flex items-center gap-2';
+    roleRow.innerHTML = `<span class="chip" data-tone="accent">${escapeHtml(msg.role || 'unknown')}</span>
+      <span class="chip">${Array.isArray(msg.content) ? msg.content.length : 1} block${
+      Array.isArray(msg.content) && msg.content.length !== 1 ? 's' : ''
+    }</span>`;
+    body.appendChild(roleRow);
+    renderContentBlocks(body, msg.content, 'Content');
+  }
+
+  body.scrollTop = 0;
+  drawer.hidden = false;
+  el('drawer-backdrop').hidden = false;
+  el('drawer-close').focus();
+}
+
+function closeDrawer() {
+  el('drawer').hidden = true;
+  el('drawer-backdrop').hidden = true;
+}
+
+function isDrawerOpen() {
+  return !el('drawer').hidden;
+}
+
+el('drawer-close').onclick = closeDrawer;
+el('drawer-backdrop').onclick = closeDrawer;
+
+/* ----------------------------------------------------------------- json */
+
+function renderJson(container, value) {
+  container.innerHTML = '';
+  container.appendChild(jsonNode(value, true));
+}
+
+function jsonNode(value, open) {
+  if (value === null || value === undefined) {
+    const span = document.createElement('span');
+    span.className = 'text-dim dark:text-dim-dk italic';
+    span.textContent = 'null';
+    return span;
+  }
+  if (typeof value === 'string') {
+    const span = document.createElement('span');
+    span.className = 'text-signal dark:text-signal-dk';
+    span.textContent = JSON.stringify(value);
+    return span;
+  }
+  if (typeof value === 'number') {
+    const span = document.createElement('span');
+    span.className = 'text-accent dark:text-accent-dk';
+    span.textContent = String(value);
+    return span;
+  }
+  if (typeof value === 'boolean') {
+    const span = document.createElement('span');
+    span.className = 'text-dim dark:text-dim-dk font-semibold';
+    span.textContent = String(value);
+    return span;
+  }
+  if (Array.isArray(value)) {
+    return collapsible(`Array(${value.length})`, value.map((v, i) => [String(i), v]), open);
+  }
+  if (typeof value === 'object') {
+    return collapsible('Object', Object.entries(value), open);
+  }
+  const span = document.createElement('span');
+  span.textContent = String(value);
+  return span;
+}
+
+function collapsible(summaryText, entries, open) {
+  const details = document.createElement('details');
+  if (open) details.open = true;
+  const summary = document.createElement('summary');
+  summary.className = 'text-dim dark:text-dim-dk';
+  summary.textContent = summaryText;
+  details.appendChild(summary);
+  for (const [k, v] of entries) {
+    const row = document.createElement('div');
+    row.className = 'py-px';
+    const keySpan = document.createElement('span');
+    keySpan.className = 'text-ink dark:text-ink-dk font-semibold';
+    keySpan.textContent = `${k}: `;
+    row.appendChild(keySpan);
+    row.appendChild(jsonNode(v, false));
+    details.appendChild(row);
+  }
+  return details;
+}
+
+/* ------------------------------------------------------------- keyboard */
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isDrawerOpen()) {
+    closeDrawer();
+    return;
+  }
+  if (e.target instanceof HTMLInputElement || isDrawerOpen()) return;
+  if (e.key === 'ArrowLeft' || e.key === 'k') selectTurn(state.turnIndex - 1);
+  if (e.key === 'ArrowRight' || e.key === 'j') selectTurn(state.turnIndex + 1);
+});
+
+/* ------------------------------------------------------------------- SSE */
+
+function connectLive() {
+  const src = new EventSource('/api/events');
+  src.onopen = () => {
+    el('live-dot').classList.add('bg-signal', 'dark:bg-signal-dk', 'live-dot-on');
+    el('live-dot').classList.remove('bg-dim', 'dark:bg-dim-dk');
+    el('live-label').textContent = 'live';
+  };
+  src.onerror = () => {
+    el('live-dot').classList.remove('bg-signal', 'dark:bg-signal-dk', 'live-dot-on');
+    el('live-dot').classList.add('bg-dim', 'dark:bg-dim-dk');
+    el('live-label').textContent = 'reconnecting';
+  };
+  src.onmessage = (evt) => {
+    const turn = JSON.parse(evt.data);
+    let session = state.sessions.find((s) => s.sessionId === turn.sessionId);
+    if (!session) {
+      session = { sessionId: turn.sessionId, turnCount: 0, lastActiveAt: null };
+      state.sessions.unshift(session);
+    }
+    session.turnCount += 1;
+    session.lastActiveAt = turn.timestamp;
+
+    if (turn.sessionId === state.sessionId) {
+      state.turns.push(turn);
+      if (state.pinned) {
+        renderLiveTail();
+      } else {
+        state.turnIndex = state.turns.length - 1;
+        renderDetail();
+      }
+    }
+    renderSessionList();
+    refreshTurnCount();
+  };
+}
+
+async function refreshTurnCount() {
+  const health = await fetchJson('/api/health');
+  el('turn-count').textContent = health.capturedTurns;
+}
+
+/* An armed delete disarms as soon as attention moves elsewhere, so a card is
+   never left one stray click away from losing its capture. */
+document.addEventListener('click', (ev) => {
+  if (!state.pendingDelete && !state.deleteError) return;
+  if (ev.target.closest('.session-del')) return;
+  state.pendingDelete = null;
+  state.deleteError = null;
+  renderSessionList();
+});
+
+renderDetail();
+loadSessions();
+connectLive();
+refreshTurnCount();

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Context Dump — Claude Code</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'media',
+    theme: {
+      extend: {
+        colors: {
+          ground:  { DEFAULT: '#F4F4F7', dk: '#08090C' },
+          panel:   { DEFAULT: '#FFFFFF', dk: '#101216' },
+          sunken:  { DEFAULT: '#EEEEF2', dk: '#0C0D11' },
+          edge:    { DEFAULT: '#E2E2EA', dk: '#20232B' },
+          ink:     { DEFAULT: '#14151A', dk: '#EFEEF4' },
+          dim:     { DEFAULT: '#6A6E7E', dk: '#848A9C' },
+          accent:  { DEFAULT: '#C4562F', dk: '#E8825C' },
+          signal:  { DEFAULT: '#2F7F76', dk: '#4FC0AE' },
+        },
+        fontFamily: {
+          sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'system-ui', 'sans-serif'],
+          mono: ['ui-monospace', '"SF Mono"', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body class="bg-ground dark:bg-ground-dk text-ink dark:text-ink-dk font-sans text-[13.5px] antialiased">
+
+  <div class="aurora" aria-hidden="true"></div>
+
+  <div class="relative grid grid-cols-1 lg:grid-cols-[268px_1fr] min-h-screen">
+
+    <!-- ───────────────────────────────────────────────── sessions rail -->
+    <aside class="rail relative z-10 lg:h-screen lg:sticky lg:top-0 flex flex-col border-b lg:border-b-0 lg:border-r border-edge dark:border-edge-dk">
+      <div class="px-6 pt-7 pb-6">
+        <div class="flex items-center gap-2.5">
+          <span class="mark"></span>
+          <h1 class="text-[15px] font-semibold tracking-tight leading-none">Context&nbsp;Dump</h1>
+        </div>
+        <p class="mt-2.5 text-[11.5px] leading-relaxed text-dim dark:text-dim-dk max-w-[26ch]">
+          Every byte Claude Code sends, in the open.
+        </p>
+      </div>
+
+      <div class="px-6 pb-5 flex items-center gap-2">
+        <span class="pill">
+          <span id="live-dot" class="w-1.5 h-1.5 rounded-full bg-dim dark:bg-dim-dk shrink-0"></span>
+          <span id="live-label">connecting</span>
+        </span>
+        <span class="pill">
+          <b id="turn-count" class="text-ink dark:text-ink-dk font-semibold tabular-nums">0</b>&nbsp;turns
+        </span>
+      </div>
+
+      <div class="px-6 pb-2 label-eyebrow">Sessions</div>
+      <ul id="session-list" class="px-3.5 pb-6 flex flex-col gap-0.5 overflow-y-auto grow"></ul>
+    </aside>
+
+    <!-- ──────────────────────────────────────────────────────── detail -->
+    <main id="detail" class="relative z-10 min-w-0"></main>
+  </div>
+
+  <!-- ─────────────────────────────────────────────── section inspector -->
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <aside id="drawer" class="drawer" hidden aria-label="Section detail">
+    <header class="shrink-0 px-7 pt-6 pb-5 border-b border-edge dark:border-edge-dk">
+      <div class="flex items-start gap-4">
+        <div class="min-w-0 grow">
+          <div id="drawer-kind" class="label-eyebrow"></div>
+          <h2 id="drawer-title" class="mt-2 font-mono text-[16px] font-semibold tracking-tight break-all leading-snug"></h2>
+        </div>
+        <button id="drawer-close" type="button" class="nav-btn shrink-0" title="Close (Esc)">✕</button>
+      </div>
+      <dl id="drawer-stats" class="mt-5 grid grid-cols-3 gap-4"></dl>
+    </header>
+    <div id="drawer-body" class="grow overflow-y-auto px-7 py-6 flex flex-col gap-7"></div>
+  </aside>
+
+  <!-- ═════════════════════════════════════════════════════ templates -->
+
+  <template id="tpl-empty">
+    <div class="px-8 sm:px-14 py-24 max-w-[62ch]">
+      <div class="label-eyebrow mb-5">Waiting for traffic</div>
+      <h2 class="text-[clamp(28px,4vw,44px)] font-semibold tracking-[-0.03em] leading-[1.08]">
+        Nothing captured<br /><span class="text-dim dark:text-dim-dk">yet.</span>
+      </h2>
+      <p class="mt-7 text-[14px] leading-[1.75] text-dim dark:text-dim-dk">
+        Point <code class="kbd">ANTHROPIC_BASE_URL</code> at this proxy and run
+        <code class="kbd">claude</code>. Every request lands here — system prompt,
+        messages, tool definitions, and real token usage.
+      </p>
+      <div class="mt-9 rounded-xl border border-edge dark:border-edge-dk bg-panel dark:bg-panel-dk overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-edge dark:border-edge-dk label-eyebrow">shell</div>
+        <pre class="px-4 py-3.5 font-mono text-[12px] leading-[1.9] overflow-x-auto"><span class="text-dim dark:text-dim-dk">$</span> export ANTHROPIC_BASE_URL=<span class="text-signal dark:text-signal-dk">http://127.0.0.1:8787</span>
+<span class="text-dim dark:text-dim-dk">$</span> claude</pre>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-detail">
+    <div class="min-w-0">
+
+      <!-- turn ribbon ------------------------------------------------- -->
+      <div class="ribbon-wrap sticky top-0 z-20 px-8 sm:px-14 pt-6 pb-4 border-b border-edge dark:border-edge-dk">
+       <div class="mx-auto w-full max-w-[1180px]">
+        <div class="flex items-end justify-between gap-6 mb-3">
+          <div class="min-w-0">
+            <div class="label-eyebrow">Turns</div>
+            <div class="mt-1.5 flex items-baseline gap-2.5 min-w-0">
+              <span id="ribbon-title" class="text-[15px] font-semibold tracking-tight tabular-nums"></span>
+              <span id="ribbon-meta" class="font-mono text-[11px] text-dim dark:text-dim-dk truncate"></span>
+            </div>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button id="turn-follow" type="button" hidden
+              class="nav-btn pin-btn"
+              title="Pinned to this turn — click to follow the newest again">pinned ×</button>
+            <button id="turn-prev" type="button" class="nav-btn" title="Previous turn">←</button>
+            <button id="turn-next" type="button" class="nav-btn" title="Next turn">→</button>
+          </div>
+        </div>
+        <div id="ribbon" class="ribbon"></div>
+       </div>
+      </div>
+
+      <div class="mx-auto w-full max-w-[1180px] px-8 sm:px-14 py-12 flex flex-col gap-7 pb-20">
+
+        <!-- hero: gauge + numbers ------------------------------------- -->
+        <section class="card">
+          <div class="card-head">
+            <h3>Context window</h3>
+            <span class="font-mono text-[11px] text-dim dark:text-dim-dk" id="context-sub"></span>
+          </div>
+          <div class="card-body grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-10 xl:gap-14 items-center divide-cells">
+            <div class="gauge-slot">
+              <svg id="gauge" viewBox="0 0 160 160" class="w-[188px] h-[188px] -rotate-90"></svg>
+              <div class="gauge-center">
+                <div id="gauge-pct" class="text-[34px] font-semibold tracking-[-0.04em] tabular-nums leading-none"></div>
+                <div id="gauge-cap" class="mt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk"></div>
+              </div>
+            </div>
+
+            <div class="min-w-0">
+              <div class="label-eyebrow mb-6">Token usage this turn</div>
+              <dl id="usage-stats" class="grid grid-cols-2 sm:grid-cols-4 gap-y-8 gap-x-5"></dl>
+            </div>
+          </div>
+        </section>
+
+        <!-- history --------------------------------------------------- -->
+        <section class="card min-w-0">
+          <div class="card-head">
+            <h3>History over time</h3>
+            <span class="font-mono text-[11px] text-dim dark:text-dim-dk" id="history-sub"></span>
+          </div>
+          <div class="card-body">
+            <div class="h-[248px] min-w-0 relative"><canvas id="history-canvas"></canvas></div>
+          </div>
+        </section>
+
+        <!-- composition ----------------------------------------------- -->
+        <section class="card min-w-0">
+          <div class="card-head">
+            <h3>What fills the window</h3>
+            <span class="font-mono text-[11px] text-dim dark:text-dim-dk" id="breakdown-sub"></span>
+          </div>
+          <div class="card-body">
+            <div id="composition-bar" class="comp-bar"></div>
+            <div id="composition-legend" class="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-y-7 divide-cells"></div>
+          </div>
+          <div class="card-foot" id="breakdown-detail"></div>
+        </section>
+
+        <!-- raw json -------------------------------------------------- -->
+        <section class="card min-w-0">
+          <div class="card-head">
+            <h3>Raw JSON</h3>
+            <div class="flex gap-1.5">
+              <button id="json-expand" type="button" class="ghost-btn">Expand all</button>
+              <button id="json-collapse" type="button" class="ghost-btn">Collapse all</button>
+            </div>
+          </div>
+          <div id="json-view" class="json-view font-mono text-[12px] leading-[1.7] max-h-[62vh] overflow-auto px-6 py-5"></div>
+        </section>
+
+      </div>
+    </div>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

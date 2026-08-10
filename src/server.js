@@ -1,0 +1,121 @@
+'use strict';
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { EventEmitter } = require('events');
+
+const { handleProxyRequest } = require('./proxy');
+const store = require('./capture-store');
+const { computeBreakdown } = require('./breakdown');
+
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+};
+
+const bus = new EventEmitter();
+bus.setMaxListeners(100);
+
+function sendJson(res, status, body) {
+  const data = JSON.stringify(body);
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(data);
+}
+
+function serveStatic(req, res) {
+  const urlPath = req.url === '/' ? '/index.html' : req.url;
+  const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath).replace(/^(\.\.[/\\])+/, ''));
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    res.writeHead(403);
+    res.end('forbidden');
+    return;
+  }
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404);
+      res.end('not found');
+      return;
+    }
+    const ext = path.extname(filePath);
+    res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream' });
+    res.end(data);
+  });
+}
+
+function handleSse(req, res) {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+  });
+  res.write(':ok\n\n');
+
+  const onTurn = (turn) => {
+    res.write(`data: ${JSON.stringify(turn)}\n\n`);
+  };
+  bus.on('turn', onTurn);
+
+  req.on('close', () => {
+    bus.off('turn', onTurn);
+  });
+}
+
+function withBreakdown(turn) {
+  return { ...turn, breakdown: computeBreakdown(turn.request, turn.response && turn.response.usage) };
+}
+
+function createServer() {
+  return http.createServer(async (req, res) => {
+    try {
+      if (req.method === 'POST' && req.url.startsWith('/v1/')) {
+        await handleProxyRequest(req, res, {
+          onCapture: (turn) => {
+            store.appendTurn(turn.sessionId, turn);
+            bus.emit('turn', withBreakdown(turn));
+          },
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/api/health') {
+        sendJson(res, 200, { ok: true, capturedTurns: store.countAllTurns() });
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/api/sessions') {
+        sendJson(res, 200, store.listSessions());
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/api/events') {
+        handleSse(req, res);
+        return;
+      }
+
+      const sessionTurnsMatch = req.method === 'GET' && req.url.match(/^\/api\/sessions\/([^/]+)\/turns$/);
+      if (sessionTurnsMatch) {
+        const sessionId = decodeURIComponent(sessionTurnsMatch[1]);
+        const turns = store.getTurns(sessionId).map(withBreakdown);
+        sendJson(res, 200, turns);
+        return;
+      }
+
+      const sessionMatch = req.method === 'DELETE' && req.url.match(/^\/api\/sessions\/([^/]+)$/);
+      if (sessionMatch) {
+        const sessionId = decodeURIComponent(sessionMatch[1]);
+        const deleted = store.deleteSession(sessionId);
+        sendJson(res, deleted ? 200 : 404, { deleted, sessionId });
+        return;
+      }
+
+      serveStatic(req, res);
+    } catch (err) {
+      sendJson(res, 500, { error: 'internal_error', message: err.message });
+    }
+  });
+}
+
+module.exports = { createServer };

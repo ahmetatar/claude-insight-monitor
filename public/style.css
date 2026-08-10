@@ -1,0 +1,344 @@
+/* Pieces Tailwind utilities don't cover cleanly. Everything else lives as
+   utility classes in index.html / app.js. */
+
+:root {
+  --accent: #C4562F;
+  --signal: #2F7F76;
+  --edge: #E2E2EA;
+  --dim: #6A6E7E;
+  --panel: #FFFFFF;
+  --rail: rgba(255, 255, 255, 0.72);
+  --ribbon: rgba(244, 244, 247, 0.86);
+  --track: rgba(20, 21, 26, 0.07);
+  --danger: #C0392B;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #E8825C;
+    --signal: #4FC0AE;
+    --edge: #20232B;
+    --dim: #848A9C;
+    --panel: #101216;
+    --rail: rgba(12, 13, 17, 0.72);
+    --ribbon: rgba(8, 9, 12, 0.84);
+    --track: rgba(239, 238, 244, 0.09);
+    --danger: #E5705F;
+  }
+}
+
+/* ─────────────────────────────────────────────────── ambient backdrop */
+
+.aurora {
+  position: fixed;
+  inset: -20% -10% auto -10%;
+  height: 70vh;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(46% 52% at 18% 0%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 68%),
+    radial-gradient(40% 48% at 78% 8%, color-mix(in srgb, var(--signal) 18%, transparent), transparent 70%);
+  filter: blur(46px);
+  opacity: 0.5;
+}
+@media (prefers-color-scheme: dark) {
+  .aurora { opacity: 0.42; }
+}
+
+.rail { background: var(--rail); backdrop-filter: blur(18px) saturate(160%); }
+.ribbon-wrap { background: var(--ribbon); backdrop-filter: blur(18px) saturate(160%); }
+
+/* ─────────────────────────────────────────────────────── small parts */
+
+.mark {
+  width: 13px; height: 13px; border-radius: 4px; flex: none;
+  background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--accent) 45%, var(--signal)));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.label-eyebrow {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--edge); border-radius: 999px;
+  padding: 4px 10px;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px; color: var(--dim); white-space: nowrap;
+}
+
+.kbd {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 2px 6px; border-radius: 5px;
+  border: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: inherit;
+}
+
+.nav-btn, .ghost-btn {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  border: 1px solid var(--edge); border-radius: 8px;
+  color: var(--dim); background: transparent;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.nav-btn { width: 28px; height: 28px; font-size: 12px; line-height: 1; }
+.ghost-btn { font-size: 10.5px; padding: 5px 10px; }
+.nav-btn:hover:not(:disabled), .ghost-btn:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.nav-btn:disabled { opacity: .3; cursor: default; }
+/* Pin release — same chrome as the nav buttons, but sized to its label and
+   tinted like the accent so a held selection is visible at a glance. */
+.pin-btn {
+  width: auto; padding: 0 9px; font-size: 10.5px; letter-spacing: .02em;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* ───────────────────────────────────────────────── session rail cards */
+
+.session-card {
+  display: block; width: 100%; text-align: left;
+  padding: 9px 11px; padding-right: 34px; border-radius: 9px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.session-card:hover { background: color-mix(in srgb, var(--dim) 9%, transparent); }
+.session-card[data-active="true"] {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* Delete control — a sibling of the card, not a child: a <button> inside a
+   <button> is invalid and swallows the row click. Stays out of sight until the
+   row is hovered, or until it is armed and waiting for the confirming click. */
+.session-row { position: relative; }
+.session-del {
+  position: absolute; top: 5px; right: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 22px; padding: 0 6px; border-radius: 7px;
+  border: 1px solid transparent; background: transparent;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px; line-height: 1; color: var(--dim);
+  cursor: pointer; opacity: 0;
+  transition: opacity .15s, color .15s, background .15s, border-color .15s;
+}
+.session-row:hover .session-del,
+.session-del:focus-visible { opacity: 1; }
+.session-del:hover { color: var(--danger); background: color-mix(in srgb, currentColor 10%, transparent); }
+.session-del[data-armed="true"] {
+  opacity: 1; font-size: 10.5px; color: var(--danger);
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+/* ───────────────────────────────────────────────────────── turn ribbon */
+
+.ribbon {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 46px; overflow-x: auto; overflow-y: hidden;
+  padding-bottom: 6px;
+  scrollbar-width: none;
+}
+.ribbon::-webkit-scrollbar { display: none; }
+
+.ribbon-bar {
+  flex: none; width: 7px; min-height: 3px;
+  border-radius: 3px 3px 2px 2px;
+  background: color-mix(in srgb, var(--dim) 34%, transparent);
+  cursor: pointer;
+  position: relative;
+  transition: background .15s, transform .15s;
+}
+.ribbon-bar:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.ribbon-bar[data-active="true"] {
+  background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent));
+}
+.ribbon-bar[data-active="true"]::after {
+  content: ''; position: absolute; left: 50%; bottom: -6px;
+  width: 3px; height: 3px; border-radius: 999px; background: var(--accent);
+  transform: translateX(-50%);
+}
+.ribbon-bar[data-error="true"] { background: color-mix(in srgb, var(--dim) 22%, transparent); }
+/* Side calls stay inspectable but read as a different thread: narrower, fainter,
+   and outlined rather than filled, so the eye follows the agent loop's bars. */
+.ribbon-bar[data-side="true"] {
+  width: 4px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dim) 40%, transparent);
+}
+.ribbon-bar[data-side="true"]:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.ribbon-bar[data-side="true"][data-active="true"] {
+  background: color-mix(in srgb, var(--accent) 65%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* ───────────────────────────────────────────────────────────── gauge */
+
+.gauge-slot { position: relative; width: 188px; height: 188px; flex: none; }
+.gauge-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
+}
+#gauge circle { transition: stroke-dasharray .6s cubic-bezier(.22,1,.36,1), stroke-dashoffset .6s cubic-bezier(.22,1,.36,1); }
+
+/* ──────────────────────────────────────────────────── composition bar */
+
+.comp-bar {
+  display: flex; gap: 3px; height: 13px;
+  border-radius: 999px; overflow: hidden;
+}
+.comp-seg {
+  height: 100%; border-radius: 999px; min-width: 4px;
+  transition: width .5s cubic-bezier(.22,1,.36,1), opacity .15s;
+}
+.comp-bar:hover .comp-seg { opacity: .45; }
+.comp-bar .comp-seg:hover { opacity: 1; }
+
+.meter { height: 5px; border-radius: 999px; background: var(--track); overflow: hidden; }
+.meter > span { display: block; height: 100%; border-radius: 999px; }
+
+/* ─────────────────────────────────────────────────────────────── cards */
+
+.card {
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 12px 28px -22px rgba(0, 0, 0, .35);
+  overflow: hidden;
+}
+.card-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  padding: 15px 24px;
+  border-bottom: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--dim) 4%, transparent);
+}
+.card-head h3 { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+.card-body { padding: 28px 24px; }
+.card-foot {
+  padding: 18px 24px;
+  border-top: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--dim) 3%, transparent);
+}
+
+/* vertical hairlines between grid cells, dropped when the grid wraps */
+.divide-cells > * + * { border-left: 1px solid var(--edge); padding-left: 22px; }
+@media (max-width: 900px) {
+  .divide-cells > * + * { border-left: 0; padding-left: 0; }
+}
+
+/* ─────────────────────────────────────────────── section rows + drawer */
+
+.section-row {
+  display: block; width: 100%; text-align: left;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--dim) 4%, transparent);
+  cursor: pointer;
+  transition: background .14s, border-color .14s;
+}
+.section-row:hover {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+.section-row .row-chevron { opacity: 0; transition: opacity .14s; }
+.section-row:hover .row-chevron { opacity: 1; }
+
+.drawer-backdrop {
+  position: fixed; inset: 0; z-index: 40;
+  background: color-mix(in srgb, #000 34%, transparent);
+  backdrop-filter: blur(2px);
+  animation: fade-in .18s ease;
+}
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 50;
+  width: min(620px, 100vw);
+  display: flex; flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--edge);
+  box-shadow: -24px 0 60px -20px rgba(0, 0, 0, .38);
+  animation: slide-in .26s cubic-bezier(.22, 1, .36, 1);
+}
+.drawer[hidden], .drawer-backdrop[hidden] { display: none; }
+
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes slide-in { from { transform: translateX(24px); opacity: 0 } to { transform: none; opacity: 1 } }
+
+.drawer-stat dt {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase; color: var(--dim);
+}
+.drawer-stat dd {
+  margin: 5px 0 0; font-size: 18px; font-weight: 600;
+  letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1;
+}
+
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--edge); color: var(--dim); white-space: nowrap;
+}
+.chip[data-tone="accent"] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.chip[data-tone="signal"] {
+  color: var(--signal);
+  border-color: color-mix(in srgb, var(--signal) 40%, transparent);
+  background: color-mix(in srgb, var(--signal) 8%, transparent);
+}
+
+.prose-block {
+  border: 1px solid var(--edge); border-radius: 11px; overflow: hidden;
+  background: color-mix(in srgb, var(--dim) 5%, transparent);
+}
+.prose-block > pre {
+  margin: 0; padding: 14px 16px;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px; line-height: 1.75;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 340px; overflow: auto;
+}
+.prose-block.is-clamped > pre { max-height: 170px; }
+
+/* ────────────────────────────────────────────────────────── live dot */
+
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--signal) 26%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--signal) 8%, transparent); }
+}
+.live-dot-on { animation: pulse-dot 2.2s ease-in-out infinite; }
+
+/* ─────────────────────────────────────────────────────────── json view */
+
+.json-view details { margin-left: 15px; }
+.json-view summary { cursor: pointer; list-style: none; }
+.json-view summary::-webkit-details-marker { display: none; }
+.json-view summary::before {
+  content: '▸'; display: inline-block; width: 12px; color: var(--dim);
+}
+.json-view details[open] > summary::before { content: '▾'; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, currentColor 18%, transparent); border-radius: 5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
