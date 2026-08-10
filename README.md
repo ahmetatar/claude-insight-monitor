@@ -137,6 +137,27 @@ usage in aggregate. The four numbers under the ring are the real ones.
 
 ---
 
+## What a capture records
+
+One JSONL line per exchange (`schema: 2`). The request and response bodies are
+kept whole, plus the parts of the exchange that live outside them:
+
+| Field | Contents |
+| --- | --- |
+| `endpoint` | Method, path and `kind` — `messages`, or `count_tokens` for the calls Claude Code makes to size the window before it sends. |
+| `client` | `claude-cli` version parsed out of the user agent, auth type (`oauth` / `api-key`), SDK retry count, and the `x-stainless-*` runtime fingerprint. |
+| `request` | Beyond model/system/messages/tools: `thinking`, `effort`, `tool_choice`, `stop_sequences`, `metadata`, `context_management`, sampling params, and `betas` as a parsed list. |
+| `response` | Message id, content, stop reason, usage, plus `error` — including the `error` event a stream can emit *after* a 200 — and the full body for anything that isn't a plain Messages reply. |
+| `response.headers` | `request-id` for correlating with Anthropic's logs, `anthropic-ratelimit-*` for remaining quota, `retry-after` on a 429. |
+| `timing` | `ttfbMs` (time to first byte) and `durationMs`. |
+| `bytes` | Request and response sizes on the wire. |
+
+Credentials are never written: `authorization`, `x-api-key`, `cookie` and
+`set-cookie` are dropped before the record is built, not redacted afterwards.
+
+Captures written before this schema are still read; they simply lack the new
+fields.
+
 ## Layout
 
 ```
