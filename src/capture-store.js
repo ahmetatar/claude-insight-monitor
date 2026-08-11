@@ -6,7 +6,7 @@ const path = require('path');
 
 /**
  * One store per machine, not per working directory — the CLI is installed
- * globally, so `ctx-proxy status` must see the same captures wherever it runs.
+ * globally, so `cmon` must see the same captures wherever it runs.
  * Override with CXT_PROXY_HOME when you want a project-local store.
  */
 const RUNTIME_DIR = process.env.CXT_PROXY_HOME

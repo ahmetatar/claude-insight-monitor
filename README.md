@@ -1,4 +1,4 @@
-# claude-cxt-dump
+# claude-insight-monitor
 
 A local proxy that sits between Claude Code and the Anthropic API, records every
 request, and then explains it: what was in the context window, why the cache
@@ -44,12 +44,12 @@ can do something about.
 ## Install
 
 ```sh
-git clone <this repo> && cd claude-cxt-dump
-npm link          # symlinks `ctx-proxy` onto your PATH
+git clone <this repo> && cd claude-insight-monitor
+npm link          # symlinks `cmon` onto your PATH
 ```
 
 `npm link` points at the working copy, so edits take effect immediately. For a
-fixed snapshot instead, use `npm install -g .`. To remove it: `npm unlink -g claude-cxt-dump`.
+fixed snapshot instead, use `npm install -g .`. To remove it: `npm unlink -g claude-insight-monitor`.
 
 No dependencies — Node's standard library only.
 
@@ -60,7 +60,7 @@ No dependencies — Node's standard library only.
 Two terminals. In the first:
 
 ```sh
-ctx-proxy session
+cmon
 ```
 
 It brings the proxy up, writes `ANTHROPIC_BASE_URL` into `~/.claude/settings.json`,
@@ -70,17 +70,7 @@ and waits. In the second terminal, just run `claude` — no export needed. Open
 When you're done, press **Enter** in the first terminal. The proxy stops and the
 settings key is removed.
 
-Prefer a single terminal?
-
-```sh
-ctx-proxy exec -- claude
-```
-
-Here the variable exists only inside the `claude` process, so there is nothing to
-clean up: when `claude` exits, the proxy stops.
-
-Those two cover almost everything. `start` / `stop` / `status` are there for the
-cases they don't: leaving the proxy up across several sessions, and checking on it.
+That is the whole interface. There are no subcommands and no flags to remember.
 
 ---
 
@@ -153,51 +143,47 @@ estimate was, which calibrates every other number on the page.
 
 ---
 
-## Commands
+## The command
 
-Five commands, two of which you'll actually type.
+One command, no arguments: `cmon`. It starts the proxy, points Claude Code at
+it, prints the UI link, and waits.
 
-| Command | What it does |
-| --- | --- |
-| `ctx-proxy session` | Start the proxy, point Claude Code at it, undo both on Enter. The everyday command. |
-| `ctx-proxy exec -- <cmd>` | Run `<cmd>` against the proxy; the variable exists only inside that process and the proxy stops when it exits. |
-| `ctx-proxy start` | Leave the proxy running in the background, detached from any terminal. Prints the export line. |
-| `ctx-proxy stop` | Stop it and clean up. |
-| `ctx-proxy status` | Running? How many turns captured? Is `settings.json` clean? |
+Everything it did is undone when it ends, and every way of ending it counts:
+**Enter**, **Ctrl-C**, closing the terminal window (`SIGHUP`), or `kill`
+(`SIGTERM`). Each one removes the `settings.json` key and stops the proxy.
+Captures are kept.
 
-`--port <n>` works on all of them (default `8787`).
+`kill -9` is the one signal a process cannot catch, so it leaves the key behind.
+The next `cmon` notices and removes it before doing anything else — a stale key
+would otherwise point every later `claude` at a dead proxy.
 
-Cleanup is not a command, because forgetting to run it is exactly the failure
-mode: `session` undoes itself on Enter or Ctrl-C, and `stop` and `status` drop a
-`settings.json` key left behind by a crash whenever they notice the proxy is
-down. If `settings.json` already holds an `ANTHROPIC_BASE_URL` you set yourself,
-`session` leaves it alone and falls back to handing you an `export` line.
+The port is chosen for you: `8787`, or the next free one above it if something
+already holds it. If `settings.json` already holds an `ANTHROPIC_BASE_URL` you
+set yourself, `cmon` leaves it alone and hands you an `export` line instead.
 
 ### Environment
 
 | Variable | Meaning |
 | --- | --- |
 | `CXT_PROXY_HOME` | Where the pid file, log and captures live. Default `~/.cxt-proxy`. Set it per project if you want separate stores. |
-| `CXT_PROXY_PORT` | Port for the proxy process itself; normally set for you by the CLI. |
+| `CXT_PROXY_PORT` | Port for the proxy process itself; set for you by `cmon`. |
 | `CXT_PROXY_HOST` | Bind address. Default `127.0.0.1` — set `0.0.0.0` only if you deliberately want it reachable from the network. |
 | `ANTHROPIC_API_KEY` | Optional, and only used by **Measure exactly** and **Replay**. When set, the proxy never reuses Claude Code's own credential for them. |
 
 ---
 
-## How the three ways to point Claude at the proxy differ
+## How Claude Code gets pointed at the proxy
 
-Claude Code needs `ANTHROPIC_BASE_URL` to reach the proxy. There is no way for
-one process to change another terminal's environment — env is copied into a
-process at birth and never written back — so each option makes a different
-trade-off:
+Claude Code needs `ANTHROPIC_BASE_URL` to reach the proxy, and there is no way
+for one process to change another terminal's environment — env is copied into a
+process at birth and never written back. So `cmon` writes the variable into the
+`env` block of `~/.claude/settings.json`, which Claude Code reads at startup.
+That reaches every `claude` you launch afterwards, in any terminal, with no
+export: the closest thing to a global switch, and the reason the second terminal
+needs nothing but `claude`.
 
-- **`settings.json`** (`session`) — Claude Code reads its `env` block at startup,
-  so this reaches every `claude` you launch afterwards, in any terminal, with no
-  export. This is the closest thing to a global switch.
-- **`exec`** — the variable lives only inside the child process. Nothing to clean
-  up, but the proxy dies with that one `claude`.
-- **`export`** (`start`) — the classic way, scoped to one shell. You unset it
-  yourself.
+The cost of a global switch is that it outlives the process that set it, which
+is what the safeguards below are for.
 
 ### Why a stale key is dangerous, and what stops it
 
@@ -208,9 +194,10 @@ key. Three safeguards:
 1. **Journalled writes.** Every value written is recorded in
    `~/.cxt-proxy/settings-patch.json`. Reverting removes only that exact value.
 2. **Your own value is never touched.** If `settings.json` already sets
-   `ANTHROPIC_BASE_URL`, the CLI says so and falls back to the export line.
-3. **Self-repair.** If the proxy is down but our key is still there, `status` and
-   `stop` remove it. So a `kill -9` or a reboot cannot strand it.
+   `ANTHROPIC_BASE_URL`, `cmon` says so and falls back to the export line.
+3. **Self-repair on startup.** If our key is still there while the proxy is down,
+   the next `cmon` removes it before starting anything. So a `kill -9` or a
+   reboot cannot strand it past the next run.
 
 ---
 
@@ -668,7 +655,7 @@ credential never appears in the capture file.
 ## Layout
 
 ```
-bin/cli.js              the ctx-proxy command
+bin/cli.js              the cmon command
 src/run.js              proxy entry point
 src/proxy.js            forwards to api.anthropic.com and records each exchange
 src/server.js           static files + the HTTP API + SSE

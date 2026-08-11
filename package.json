@@ -1,17 +1,14 @@
 {
-  "name": "claude-cxt-dump",
+  "name": "claude-insight-monitor",
   "version": "0.1.0",
   "description": "On/off toggleable proxy that captures every request Claude Code sends to the Anthropic API and shows the full context on a local web page.",
   "type": "commonjs",
   "bin": {
-    "ctx-proxy": "bin/cli.js"
+    "cmon": "bin/cli.js"
   },
   "main": "src/server.js",
   "scripts": {
-    "session": "node bin/cli.js session",
-    "start": "node bin/cli.js start",
-    "stop": "node bin/cli.js stop",
-    "status": "node bin/cli.js status"
+    "start": "node bin/cli.js"
   },
   "license": "MIT"
 }

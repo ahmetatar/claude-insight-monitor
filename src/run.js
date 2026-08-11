@@ -10,5 +10,5 @@ const host = process.env.CXT_PROXY_HOST || '127.0.0.1';
 const server = createServer();
 server.listen(port, host, () => {
   // stdout is redirected to a log file by the CLI when started detached.
-  console.log(`ctx-proxy listening on http://${host}:${port}`);
+  console.log(`cmon listening on http://${host}:${port}`);
 });
