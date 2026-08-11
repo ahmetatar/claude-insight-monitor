@@ -1,26 +1,41 @@
 'use strict';
 
-const DARK = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+/* CSS carries the theme for everything drawn by the browser; these are the
+   colours only JavaScript can hand to Chart.js and the SVG gauge. They are
+   mutated in place rather than rebound, so every render site keeps reading
+   the same object after a theme switch. */
+const THEME_KEY = 'context-dump:theme';
 
-const THEME = DARK
-  ? { ink: '#EFEEF4', dim: '#848A9C', edge: '#20232B', panel: '#101216', accent: '#E8825C' }
-  : { ink: '#14151A', dim: '#6A6E7E', edge: '#E2E2EA', panel: '#FFFFFF', accent: '#C4562F' };
+let DARK = document.documentElement.classList.contains('dark');
+
+const PALETTES = {
+  dark: { ink: '#EFEEF4', dim: '#848A9C', edge: '#20232B', panel: '#101216', accent: '#E8825C' },
+  light: { ink: '#14151A', dim: '#6A6E7E', edge: '#E2E2EA', panel: '#FFFFFF', accent: '#C4562F' },
+};
+
+const THEME = {};
 
 const SERIES = [
-  { key: 'input_tokens', label: 'input', color: DARK ? '#7C9BFF' : '#4A6FE3' },
-  { key: 'cache_creation_input_tokens', label: 'cache write', color: DARK ? '#E8825C' : '#C4562F' },
-  { key: 'cache_read_input_tokens', label: 'cache read', color: DARK ? '#4FC0AE' : '#2F7F76' },
-  { key: 'output_tokens', label: 'output', color: DARK ? '#E3B44A' : '#B98407' },
+  { key: 'input_tokens', label: 'input', dark: '#7C9BFF', light: '#4A6FE3', color: '' },
+  { key: 'cache_creation_input_tokens', label: 'cache write', dark: '#E8825C', light: '#C4562F', color: '' },
+  { key: 'cache_read_input_tokens', label: 'cache read', dark: '#4FC0AE', light: '#2F7F76', color: '' },
+  { key: 'output_tokens', label: 'output', dark: '#E3B44A', light: '#B98407', color: '' },
 ];
 
 /* Everything the model had to read this turn — the three input-side series. */
 const CONTEXT_KEYS = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
 
-const GROUP_COLORS = {
-  'System prompt': SERIES[1].color,
-  Messages: SERIES[0].color,
-  'Tool definitions': SERIES[2].color,
-};
+const GROUP_COLORS = { 'System prompt': '', Messages: '', 'Tool definitions': '' };
+
+function applyPalette() {
+  Object.assign(THEME, PALETTES[DARK ? 'dark' : 'light']);
+  for (const s of SERIES) s.color = DARK ? s.dark : s.light;
+  GROUP_COLORS['System prompt'] = SERIES[1].color;
+  GROUP_COLORS.Messages = SERIES[0].color;
+  GROUP_COLORS['Tool definitions'] = SERIES[2].color;
+}
+
+applyPalette();
 
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -62,6 +77,28 @@ const state = {
 let historyChart = null;
 
 const el = (id) => document.getElementById(id);
+
+/* ----------------------------------------------------------------- icons */
+
+/* Markup for one sprite symbol. Icons are referenced rather than inlined so a
+   row rendered a hundred times costs a hundred <use> elements, not a hundred
+   copies of the path data. */
+function icon(name, cls = '') {
+  return `<svg class="ico ${cls}" aria-hidden="true"><use href="#i-${name}" /></svg>`;
+}
+
+/* Buttons carry an icon beside their label, so the label lives in a <span> and
+   swapping it must not take the icon with it. */
+function setLabel(button, text) {
+  const span = button.querySelector('span');
+  if (span) span.textContent = text;
+  else button.textContent = text;
+}
+
+function getLabel(button) {
+  const span = button.querySelector('span');
+  return span ? span.textContent : button.textContent;
+}
 
 async function fetchJson(url) {
   const res = await fetch(url);
@@ -156,6 +193,7 @@ function scheduleToolRefresh(sessionId) {
     if (state.sessionId === sessionId) {
       renderTools();
       renderThreads();
+      balanceDash();
     }
   }, 2000);
 }
@@ -179,6 +217,7 @@ async function selectSession(sessionId) {
     if (state.sessionId === sessionId) {
       renderTools();
       renderThreads();
+      balanceDash();
     }
   });
   state.turnIndex = state.turns.length - 1;
@@ -277,7 +316,11 @@ function renderSessionList() {
     del.type = 'button';
     del.className = 'session-del';
     del.dataset.armed = String(armed || failed);
-    del.textContent = failed ? 'failed' : armed ? 'delete?' : '✕';
+    del.innerHTML = failed
+      ? 'failed'
+      : armed
+        ? `${icon('trash', 'ico-xs')}delete?`
+        : icon('trash', 'ico-xs');
     del.title = failed
       ? state.deleteError.message
       : armed
@@ -342,8 +385,107 @@ function renderDetail() {
   wireExportButtons(turn);
   renderJson(el('json-view'), { request: turn.request, response: turn.response });
 
+  wireCards();
+  balanceDash();
+
   el('json-expand').onclick = () => container.querySelectorAll('.json-view details').forEach((d) => (d.open = true));
   el('json-collapse').onclick = () => container.querySelectorAll('.json-view details').forEach((d, i) => (d.open = i === 0));
+}
+
+/* ------------------------------------------------------- card collapsing */
+
+/* On a board of eleven panels, the ones you are not reading are noise. Each
+   card's title block is its own collapse control, and which cards are folded
+   survives a reload — the layout you arrived at is the layout you keep. */
+const COLLAPSE_KEY = 'context-dump:collapsed-cards';
+
+function loadCollapsed() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const collapsedCards = loadCollapsed();
+
+function saveCollapsed() {
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsedCards]));
+  } catch {
+    /* private mode, a full quota — the fold state is not worth failing over */
+  }
+}
+
+function setCardCollapsed(card, collapsed, persist = false) {
+  card.dataset.collapsed = String(collapsed);
+  const toggle = card.querySelector('.card-toggle');
+  if (toggle) toggle.setAttribute('aria-expanded', String(!collapsed));
+  if (persist) {
+    if (collapsed) collapsedCards.add(card.id);
+    else collapsedCards.delete(card.id);
+    saveCollapsed();
+  }
+  /* Chart.js measures its canvas on creation. A chart drawn while its card was
+     folded has no size to measure, so it has to be told to look again. */
+  if (!collapsed && historyChart && card.contains(historyChart.canvas)) historyChart.resize();
+}
+
+/* Cards that share a row on the board. Half of them only exist for some
+   sessions — a session with one thread has no Threads card — and a lone card
+   next to a hole reads as something failed to load, so it takes the full row
+   instead. */
+const DASH_PAIRS = [
+  ['history-card', 'network-card'],
+  ['calls-card', 'threads-card'],
+  ['cache-card', 'thinking-card'],
+  ['tools-card', 'prompt-card'],
+];
+
+function setSpan(card, full) {
+  if (!card.dataset.span) {
+    card.dataset.span = [...card.classList].find((c) => c.startsWith('col-')) || 'col-12';
+  }
+  card.classList.remove('col-4', 'col-5', 'col-6', 'col-7', 'col-12');
+  card.classList.add(full ? 'col-12' : card.dataset.span);
+}
+
+function balanceDash() {
+  for (const [aId, bId] of DASH_PAIRS) {
+    const a = el(aId);
+    const b = el(bId);
+    if (!a || !b) continue;
+    setSpan(a, b.hidden);
+    setSpan(b, a.hidden);
+  }
+}
+
+function wireCards() {
+  const cards = [...document.querySelectorAll('#detail .card')];
+  for (const card of cards) {
+    const toggle = card.querySelector('.card-toggle');
+    if (!toggle) continue;
+    setCardCollapsed(card, collapsedCards.has(card.id));
+    toggle.onclick = () => setCardCollapsed(card, card.dataset.collapsed !== 'true', true);
+  }
+
+  const all = el('cards-toggle-all');
+  if (!all) return;
+  const sync = () => {
+    const visible = [...document.querySelectorAll('#detail .card')].filter((c) => !c.hidden);
+    const anyOpen = visible.some((c) => c.dataset.collapsed !== 'true');
+    setLabel(all, anyOpen ? 'Collapse all' : 'Expand all');
+    all.querySelector('use').setAttribute('href', anyOpen ? '#i-collapse' : '#i-expand');
+    all.title = anyOpen ? 'Collapse every card' : 'Expand every card';
+  };
+  all.onclick = () => {
+    const visible = [...document.querySelectorAll('#detail .card')].filter((c) => !c.hidden);
+    const collapse = visible.some((c) => c.dataset.collapsed !== 'true');
+    for (const card of visible) setCardCollapsed(card, collapse, true);
+    sync();
+  };
+  sync();
 }
 
 /* --------------------------------------------------------- turn ribbon */
@@ -361,7 +503,10 @@ function renderRibbon() {
     bar.dataset.active = String(i === state.turnIndex);
     bar.dataset.side = String(isSideChain(t));
     if (!tokens) bar.dataset.error = 'true';
-    bar.style.height = `${Math.max(3, (tokens / max) * 34)}px`;
+    const fill = document.createElement('span');
+    fill.className = 'ribbon-fill';
+    fill.style.height = `${Math.max(3, (tokens / max) * 34)}px`;
+    bar.appendChild(fill);
     const call = callOf(t);
     bar.dataset.kind = call ? call.id : '';
     bar.title = `#${i + 1} · ${compactNum(tokens)} ctx tokens${call ? ` · ${call.label}` : ''}`;
@@ -900,7 +1045,7 @@ function renderReplayControls(turn) {
   const busy = state.replaying === key;
   const button = el('replay-btn');
   button.disabled = busy;
-  button.textContent = busy ? 'replaying…' : 'Replay';
+  setLabel(button, busy ? 'replaying…' : 'Replay');
   button.onclick = () => replayCurrentTurn();
 
   el('replay-note').textContent =
@@ -1055,14 +1200,14 @@ function requestBodyOf(turn) {
 
 function wireExportButtons(turn) {
   const copy = async (button, text) => {
-    const original = button.textContent;
+    const original = getLabel(button);
     try {
       await navigator.clipboard.writeText(text);
-      button.textContent = 'Copied';
+      setLabel(button, 'Copied');
     } catch {
-      button.textContent = 'Failed';
+      setLabel(button, 'Failed');
     }
-    setTimeout(() => (button.textContent = original), 1400);
+    setTimeout(() => setLabel(button, original), 1400);
   };
   el('copy-curl').onclick = (e) => copy(e.currentTarget, requestAsCurl(turn));
   el('copy-request').onclick = (e) => copy(e.currentTarget, JSON.stringify(requestBodyOf(turn), null, 2));
@@ -1087,7 +1232,7 @@ function renderMeasure() {
   const busy = state.measuring === key;
 
   button.disabled = busy;
-  button.textContent = busy ? 'measuring…' : result ? 'measured' : 'Measure exactly';
+  setLabel(button, busy ? 'measuring…' : result ? 'measured' : 'Measure exactly');
   button.onclick = () => measureCurrentTurn();
 
   if (state.measureError) {
@@ -1884,21 +2029,37 @@ function renderBreakdown(turn) {
 
   detailEl.innerHTML = '';
 
+  /* The list underneath is the only way into the per-section inspector, and it
+     used to hide behind a ▸ that read as punctuation. It now says what it holds
+     and what clicking does, before anything is hovered. */
   const toggle = document.createElement('button');
   toggle.type = 'button';
-  toggle.className = 'ghost-btn';
-  toggle.innerHTML = `${state.breakdownOpen ? '▾' : '▸'}&nbsp; ${breakdown.sections.length} individual sections`;
+  toggle.className = 'disclosure';
+  toggle.setAttribute('aria-expanded', String(state.breakdownOpen));
+  toggle.innerHTML = `
+    ${icon('chevron-right', 'chev')}
+    ${icon('list', 'ico-xs')}
+    <span class="disclosure-label">${breakdown.sections.length} individual sections — open any of them</span>
+    <span class="disclosure-hint">${state.breakdownOpen ? 'hide' : 'show'}</span>`;
   detailEl.appendChild(toggle);
 
   const panel = document.createElement('div');
   panel.className = `mt-5 ${state.breakdownOpen ? '' : 'hidden'}`;
+
+  const filterWrap = document.createElement('div');
+  filterWrap.className = 'relative mb-5';
+  filterWrap.innerHTML = `<span class="absolute left-3 top-1/2 -translate-y-1/2 text-dim dark:text-dim-dk pointer-events-none">${icon(
+    'search',
+    'ico-xs'
+  )}</span>`;
 
   const filterInput = document.createElement('input');
   filterInput.type = 'text';
   filterInput.placeholder = 'Filter sections — e.g. "tool: Bash"';
   filterInput.value = state.breakdownFilter;
   filterInput.className =
-    'w-full mb-5 px-3 py-2 rounded-lg border border-edge dark:border-edge-dk bg-panel dark:bg-panel-dk font-mono text-[11.5px] text-ink dark:text-ink-dk placeholder:text-dim dark:placeholder:text-dim-dk focus:outline-none focus:border-accent dark:focus:border-accent-dk';
+    'w-full pl-9 pr-3 py-2 rounded-lg border border-edge dark:border-edge-dk bg-panel dark:bg-panel-dk font-mono text-[11.5px] text-ink dark:text-ink-dk placeholder:text-dim dark:placeholder:text-dim-dk focus:outline-none focus:border-accent dark:focus:border-accent-dk';
+  filterWrap.appendChild(filterInput);
 
   const rowsEl = document.createElement('div');
   rowsEl.className = 'flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-2';
@@ -1930,7 +2091,7 @@ function renderBreakdown(turn) {
         s.label
       )}</span>
           <span class="ml-auto font-mono text-[11px] tabular-nums whitespace-nowrap">${compactNum(s.approxTokens)} tok</span>
-          <span class="row-chevron font-mono text-[11px] text-accent dark:text-accent-dk">›</span>
+          <span class="row-chevron self-center">${icon('chevron-right', 'ico-xs')}</span>
         </div>
         <div class="meter"><span style="width:${(s.chars / maxChars) * 100}%;background:${colorFor(s.label)}"></span></div>`;
       row.onclick = () => openDrawer(s, breakdown);
@@ -1944,12 +2105,13 @@ function renderBreakdown(turn) {
     renderRows();
   };
 
-  panel.append(filterInput, rowsEl);
+  panel.append(filterWrap, rowsEl);
   detailEl.appendChild(panel);
 
   toggle.onclick = () => {
     state.breakdownOpen = !state.breakdownOpen;
-    toggle.innerHTML = `${state.breakdownOpen ? '▾' : '▸'}&nbsp; ${breakdown.sections.length} individual sections`;
+    toggle.setAttribute('aria-expanded', String(state.breakdownOpen));
+    toggle.querySelector('.disclosure-hint').textContent = state.breakdownOpen ? 'hide' : 'show';
     panel.classList.toggle('hidden', !state.breakdownOpen);
   };
 }
@@ -2011,17 +2173,16 @@ function block(title, node, opts = {}) {
   if (opts.copy != null) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'ghost-btn';
-    btn.textContent = 'Copy';
+    btn.className = 'ghost-btn with-ico';
+    btn.innerHTML = `${icon('copy', 'ico-xs')}<span>Copy</span>`;
     btn.onclick = async () => {
       try {
         await navigator.clipboard.writeText(opts.copy);
-        btn.textContent = 'Copied';
-        setTimeout(() => (btn.textContent = 'Copy'), 1400);
+        setLabel(btn, 'Copied');
       } catch {
-        btn.textContent = 'Failed';
-        setTimeout(() => (btn.textContent = 'Copy'), 1400);
+        setLabel(btn, 'Failed');
       }
+      setTimeout(() => setLabel(btn, 'Copy'), 1400);
     };
     right.appendChild(btn);
   }
@@ -2037,11 +2198,13 @@ function textPanel(text, { clamp = false } = {}) {
   pre.textContent = text;
   box.appendChild(pre);
 
+  /* Clamped text fades out and carries a bar across the full width, rather than
+     a small button that reads as unrelated to the block above it. */
   if (clamp) {
     const more = document.createElement('button');
     more.type = 'button';
-    more.className = 'ghost-btn w-full rounded-none border-x-0 border-b-0';
-    more.textContent = 'Show full text';
+    more.className = 'expand-bar';
+    more.innerHTML = `${icon('chevron-down', 'ico-xs')}<span>Show full text</span>`;
     more.onclick = () => {
       box.classList.remove('is-clamped');
       more.remove();
@@ -2360,6 +2523,41 @@ document.addEventListener('click', (ev) => {
   renderSessionList();
 });
 
+/* ----------------------------------------------------------------- theme */
+
+/* Light or dark is the reader's call, and it outlives the tab: the choice is
+   stored, re-applied before the first paint, and never overridden by the OS
+   once it has been made. */
+function setTheme(name, persist = true) {
+  DARK = name === 'dark';
+  document.documentElement.classList.toggle('dark', DARK);
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, DARK ? 'dark' : 'light');
+    } catch {
+      /* private mode: the switch still works, it just forgets */
+    }
+  }
+  applyPalette();
+  syncThemeSwitch();
+  /* Chart.js and the SVG gauge were handed literal colours at draw time, so
+     the only way to recolour them is to draw them again. */
+  renderDetail();
+  renderSessionList();
+}
+
+function syncThemeSwitch() {
+  el('theme-light').setAttribute('aria-pressed', String(!DARK));
+  el('theme-dark').setAttribute('aria-pressed', String(DARK));
+}
+
+function wireTheme() {
+  el('theme-light').onclick = () => setTheme('light');
+  el('theme-dark').onclick = () => setTheme('dark');
+  syncThemeSwitch();
+}
+
+wireTheme();
 renderDetail();
 loadSessions();
 connectLive();

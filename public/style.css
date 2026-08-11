@@ -13,19 +13,19 @@
   --danger: #C0392B;
   --warn: #A5701A;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --accent: #E8825C;
-    --signal: #4FC0AE;
-    --edge: #20232B;
-    --dim: #848A9C;
-    --panel: #101216;
-    --rail: rgba(12, 13, 17, 0.72);
-    --ribbon: rgba(8, 9, 12, 0.84);
-    --track: rgba(239, 238, 244, 0.09);
-    --danger: #E5705F;
-    --warn: #D9A24A;
-  }
+/* The theme is a choice, not a guess: the root class is set before paint from
+   the stored pick, falling back to the OS only the first time. */
+:root.dark {
+  --accent: #E8825C;
+  --signal: #4FC0AE;
+  --edge: #20232B;
+  --dim: #848A9C;
+  --panel: #101216;
+  --rail: rgba(12, 13, 17, 0.72);
+  --ribbon: rgba(8, 9, 12, 0.84);
+  --track: rgba(239, 238, 244, 0.09);
+  --danger: #E5705F;
+  --warn: #D9A24A;
 }
 
 /* ─────────────────────────────────────────────────── ambient backdrop */
@@ -42,12 +42,30 @@
   filter: blur(46px);
   opacity: 0.5;
 }
-@media (prefers-color-scheme: dark) {
-  .aurora { opacity: 0.42; }
-}
+:root.dark .aurora { opacity: 0.42; }
 
 .rail { background: var(--rail); backdrop-filter: blur(18px) saturate(160%); }
 .ribbon-wrap { background: var(--ribbon); backdrop-filter: blur(18px) saturate(160%); }
+
+/* ────────────────────────────────────────────────────────────── icons */
+
+/* One sizing rule for the whole sprite: icons inherit the colour of whatever
+   they sit in, so a button's hover state carries its icon along with it. */
+.ico { width: 16px; height: 16px; flex: none; display: block; }
+.ico-xs { width: 13px; height: 13px; }
+
+/* A card's subject, tinted and boxed — the anchor the eye lands on first when
+   scanning a wall of panels. */
+.ico-box {
+  width: 27px; height: 27px; border-radius: 9px; flex: none;
+  display: grid; place-items: center;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* Buttons that pair an icon with a label. */
+.with-ico { display: inline-flex; align-items: center; gap: 6px; }
 
 /* ─────────────────────────────────────────────────────── small parts */
 
@@ -88,21 +106,31 @@
   color: var(--dim); background: transparent;
   transition: color .15s, border-color .15s, background .15s;
 }
-.nav-btn { width: 28px; height: 28px; font-size: 12px; line-height: 1; }
+.nav-btn {
+  width: 28px; height: 28px; font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
 .ghost-btn { font-size: 10.5px; padding: 5px 10px; }
-.nav-btn:hover:not(:disabled), .ghost-btn:hover {
+.nav-btn:hover:not(:disabled), .ghost-btn:hover:not(:disabled) {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
 }
-.nav-btn:disabled { opacity: .3; cursor: default; }
+.nav-btn:disabled, .ghost-btn:disabled { opacity: .3; cursor: default; }
 /* Pin release — same chrome as the nav buttons, but sized to its label and
    tinted like the accent so a held selection is visible at a glance. */
 .pin-btn {
-  width: auto; padding: 0 9px; font-size: 10.5px; letter-spacing: .02em;
+  width: auto; padding: 0 9px; height: 28px; font-size: 10.5px; letter-spacing: .02em;
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* Anything focused by keyboard gets the same ring, so the tab order through a
+   page of buttons is followable. */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  outline-offset: 2px;
 }
 
 /* ───────────────────────────────────────────────── session rail cards */
@@ -126,11 +154,11 @@
 .session-row { position: relative; }
 .session-del {
   position: absolute; top: 5px; right: 5px;
-  display: inline-flex; align-items: center; justify-content: center;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   min-width: 22px; height: 22px; padding: 0 6px; border-radius: 7px;
   border: 1px solid transparent; background: transparent;
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px; line-height: 1; color: var(--dim);
+  font-size: 10.5px; line-height: 1; color: var(--dim);
   cursor: pointer; opacity: 0;
   transition: opacity .15s, color .15s, background .15s, border-color .15s;
 }
@@ -138,7 +166,7 @@
 .session-del:focus-visible { opacity: 1; }
 .session-del:hover { color: var(--danger); background: color-mix(in srgb, currentColor 10%, transparent); }
 .session-del[data-armed="true"] {
-  opacity: 1; font-size: 10.5px; color: var(--danger);
+  opacity: 1; color: var(--danger);
   border-color: color-mix(in srgb, currentColor 45%, transparent);
   background: color-mix(in srgb, currentColor 10%, transparent);
 }
@@ -146,23 +174,37 @@
 /* ───────────────────────────────────────────────────────── turn ribbon */
 
 .ribbon {
-  display: flex; align-items: flex-end; gap: 3px;
+  display: flex; align-items: stretch; gap: 0;
   height: 46px; overflow-x: auto; overflow-y: hidden;
   padding-bottom: 6px;
   scrollbar-width: none;
 }
 .ribbon::-webkit-scrollbar { display: none; }
 
+/* The bar you see is 7px wide, but a 7px target is a target you miss. The
+   button is 13px and full height; the padding around the fill is the slack
+   that makes a turn clickable by aiming near it rather than exactly at it. */
 .ribbon-bar {
-  flex: none; width: 7px; min-height: 3px;
+  flex: none; width: 13px; padding: 0 3px;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: none; border: 0; cursor: pointer;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+.ribbon-bar:focus-visible { outline: none; }
+.ribbon-bar:focus-visible .ribbon-fill {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.ribbon-fill {
+  width: 100%; min-height: 3px;
   border-radius: 3px 3px 2px 2px;
   background: color-mix(in srgb, var(--dim) 34%, transparent);
-  cursor: pointer;
-  position: relative;
   transition: background .15s, transform .15s;
+  pointer-events: none;
 }
-.ribbon-bar:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
-.ribbon-bar[data-active="true"] {
+.ribbon-bar:hover .ribbon-fill { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.ribbon-bar[data-active="true"] .ribbon-fill {
   background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent));
 }
 .ribbon-bar[data-active="true"]::after {
@@ -170,18 +212,19 @@
   width: 3px; height: 3px; border-radius: 999px; background: var(--accent);
   transform: translateX(-50%);
 }
-.ribbon-bar[data-error="true"] { background: color-mix(in srgb, var(--dim) 22%, transparent); }
+.ribbon-bar[data-error="true"] .ribbon-fill { background: color-mix(in srgb, var(--dim) 22%, transparent); }
 /* Side calls stay inspectable but read as a different thread: narrower, fainter,
-   and outlined rather than filled, so the eye follows the agent loop's bars. */
-.ribbon-bar[data-side="true"] {
-  width: 4px;
+   and outlined rather than filled, so the eye follows the agent loop's bars.
+   Only the fill narrows — the click target stays as generous as the rest. */
+.ribbon-bar[data-side="true"] { width: 10px; }
+.ribbon-bar[data-side="true"] .ribbon-fill {
   background: transparent;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dim) 40%, transparent);
 }
-.ribbon-bar[data-side="true"]:hover {
+.ribbon-bar[data-side="true"]:hover .ribbon-fill {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
-.ribbon-bar[data-side="true"][data-active="true"] {
+.ribbon-bar[data-side="true"][data-active="true"] .ribbon-fill {
   background: color-mix(in srgb, var(--accent) 65%, transparent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
@@ -245,13 +288,34 @@
 .stat-row + .stat-row { border-top: 1px solid var(--edge); }
 .stat-share { grid-column: 1 / -1; height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; }
 
-/* A row that navigates: same grid, none of the button chrome. */
+/* A row that navigates: same grid, none of the button chrome — but it has to
+   look reachable, so it carries a chevron that is always visible rather than
+   one that only appears once the pointer is already on it. */
 button.stat-row {
   background: transparent; border: 0; width: 100%;
   font: inherit; color: inherit; text-align: left; cursor: pointer;
+  padding-right: 26px; position: relative;
+  border-radius: 8px;
+  transition: background .14s;
 }
+button.stat-row::after {
+  content: ''; position: absolute; right: 6px; top: 50%;
+  width: 13px; height: 13px; margin-top: -7px;
+  background: currentColor; color: var(--dim);
+  opacity: .5;
+  transition: opacity .14s, transform .14s;
+  -webkit-mask: var(--chevron) center / contain no-repeat;
+  mask: var(--chevron) center / contain no-repeat;
+}
+button.stat-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+button.stat-row:hover::after { opacity: 1; color: var(--accent); transform: translateX(2px); }
 button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent) 18%, var(--track)); }
 .stat-share > span { display: block; height: 100%; border-radius: 999px; }
+
+/* A chevron drawn as a mask so it can inherit colour from its row. */
+:root {
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='9 18 15 12 9 6'/%3E%3C/svg%3E");
+}
 
 .dot { width: 7px; height: 7px; border-radius: 999px; display: inline-block; flex: none; }
 
@@ -292,6 +356,31 @@ button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent)
 .verdict[data-v="miss"] { color: var(--danger); }
 .verdict[data-v="cold"] { color: var(--dim); }
 
+/* ══════════════════════════════════════════════════ dashboard layout */
+
+/* Wide screens read the session as a board: panels sit side by side, sized by
+   how much each has to say. Below the breakpoint every panel spans the full
+   width and the board becomes the original single column. */
+.dash {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 20px;
+  /* Panels sharing a row stretch to the same height. Left at their natural
+     size, the shorter one leaves dead air below it until the next row starts;
+     stretched, that slack lives inside the card where it reads as padding. */
+  align-items: stretch;
+}
+.col-4 { grid-column: span 4; }
+.col-5 { grid-column: span 5; }
+.col-6 { grid-column: span 6; }
+.col-7 { grid-column: span 7; }
+.col-12 { grid-column: 1 / -1; }
+
+@media (max-width: 1279px) {
+  .dash { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .dash > * { grid-column: 1 / -1; }
+}
+
 /* ─────────────────────────────────────────────────────────────── cards */
 
 .card {
@@ -300,27 +389,114 @@ button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent)
   background: var(--panel);
   box-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 12px 28px -22px rgba(0, 0, 0, .35);
   overflow: hidden;
+  /* Everything inside sizes against the card, not the viewport — the same card
+     is two columns wide on a board and one column wide on a phone. */
+  container: card / inline-size;
+  /* A column so the body absorbs the height the row hands down and the footer
+     stays pinned to the bottom edge. */
+  display: flex; flex-direction: column;
 }
 .card-head {
-  display: flex; align-items: baseline; justify-content: space-between;
-  gap: 16px; flex-wrap: wrap;
-  padding: 15px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  padding: 11px 18px 11px 13px;
   border-bottom: 1px solid var(--edge);
   background: color-mix(in srgb, var(--dim) 4%, transparent);
 }
 .card-head h3 { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
-.card-body { padding: 28px 24px; }
+.card-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.card-body { padding: 26px 22px; flex: 1 1 auto; }
 .card-foot {
-  padding: 18px 24px;
+  padding: 16px 22px;
   border-top: 1px solid var(--edge);
   background: color-mix(in srgb, var(--dim) 3%, transparent);
 }
 
-/* vertical hairlines between grid cells, dropped when the grid wraps */
-.divide-cells > * + * { border-left: 1px solid var(--edge); padding-left: 22px; }
-@media (max-width: 900px) {
-  .divide-cells > * + * { border-left: 0; padding-left: 0; }
+/* The whole title block is the collapse control: an icon, the name, and a
+   chevron that rotates. Everything else in the header stays outside it, so the
+   header's own buttons keep working. */
+.card-toggle {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 8px 5px 5px; margin: -5px 0 -5px -5px;
+  border: 0; border-radius: 10px;
+  background: transparent; color: inherit; font: inherit;
+  cursor: pointer;
+  transition: background .14s;
 }
+.card-toggle:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.card-toggle .chev { color: var(--dim); transition: transform .2s cubic-bezier(.22,1,.36,1), color .14s; }
+.card-toggle:hover .chev { color: var(--accent); }
+.card[data-collapsed="true"] .card-toggle .chev { transform: rotate(-90deg); }
+.card[data-collapsed="true"] > *:not(.card-head) { display: none; }
+/* A collapsed card is a title bar — it must not be stretched into a tall empty
+   frame by whatever it happens to share a row with. */
+.card[data-collapsed="true"] { align-self: start; }
+.card[data-collapsed="true"] .card-head { border-bottom-color: transparent; }
+
+/* ─────────────────────────────────────── card-relative inner layouts */
+
+/* Number cells: two across in a narrow panel, four across once the card is
+   wide enough to hold them without crowding. */
+.cells {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 26px 18px;
+}
+.cells-3 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px 18px; }
+.hero { display: grid; grid-template-columns: minmax(0, 1fr); gap: 30px; align-items: center; }
+.machine-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
+
+/* vertical hairlines between grid cells, dropped when the grid wraps */
+.divide-cells > * + * { border-left: 0; padding-left: 0; }
+
+@container card (min-width: 470px) {
+  .cells { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .cells-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .divide-cells > * + * { border-left: 1px solid var(--edge); padding-left: 20px; }
+}
+@container card (min-width: 640px) {
+  .hero { grid-template-columns: auto minmax(0, 1fr); gap: 46px; }
+  /* The hairline only belongs there once the gauge and the numbers are side by
+     side — stacked, it would cut across the panel. */
+  .hero > * + * { border-left: 1px solid var(--edge); padding-left: 46px; }
+}
+@container card (min-width: 820px) {
+  .machine-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; }
+}
+
+/* ════════════════════════════════════ disclosures: things that open */
+
+/* An expandable region has to announce itself before it is hovered, or it reads
+   as a label. A dashed edge, a chevron that turns, and a trailing verb are what
+   separate "there is more here" from decoration. */
+.disclosure {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 13px;
+  border: 1px dashed color-mix(in srgb, var(--dim) 42%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--dim) 5%, transparent);
+  color: inherit; font: inherit; text-align: left;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.disclosure:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.disclosure .chev { color: var(--dim); transition: transform .2s cubic-bezier(.22,1,.36,1), color .15s; }
+.disclosure:hover .chev { color: var(--accent); }
+.disclosure[aria-expanded="true"] .chev { transform: rotate(90deg); color: var(--accent); }
+.disclosure .disclosure-label {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+.disclosure .disclosure-hint {
+  margin-left: auto;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--dim);
+}
+.disclosure:hover .disclosure-hint { color: var(--accent); }
 
 /* ─────────────────────────────────────────────── section rows + drawer */
 
@@ -337,8 +513,10 @@ button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent)
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   border-color: color-mix(in srgb, var(--accent) 38%, transparent);
 }
-.section-row .row-chevron { opacity: 0; transition: opacity .14s; }
-.section-row:hover .row-chevron { opacity: 1; }
+/* Visible at rest, brighter on hover: the row opens an inspector, and nothing
+   else on the page says so. */
+.section-row .row-chevron { color: var(--dim); opacity: .55; transition: opacity .14s, color .14s, transform .14s; }
+.section-row:hover .row-chevron { opacity: 1; color: var(--accent); transform: translateX(2px); }
 
 .drawer-backdrop {
   position: fixed; inset: 0; z-index: 40;
@@ -389,6 +567,7 @@ button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent)
 .prose-block {
   border: 1px solid var(--edge); border-radius: 11px; overflow: hidden;
   background: color-mix(in srgb, var(--dim) 5%, transparent);
+  position: relative;
 }
 .prose-block > pre {
   margin: 0; padding: 14px 16px;
@@ -397,7 +576,24 @@ button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent)
   white-space: pre-wrap; word-break: break-word;
   max-height: 340px; overflow: auto;
 }
-.prose-block.is-clamped > pre { max-height: 170px; }
+.prose-block.is-clamped > pre { max-height: 170px; overflow: hidden; }
+/* Text that stops mid-thought is only obviously cut off if it fades out. */
+.prose-block.is-clamped > pre::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 34px; height: 46px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--panel) 92%, var(--dim)));
+}
+.prose-block .expand-bar {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  width: 100%; padding: 8px 10px;
+  border: 0; border-top: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--dim) 7%, transparent);
+  color: var(--dim); cursor: pointer;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px; letter-spacing: .06em;
+  transition: color .14s, background .14s;
+}
+.prose-block .expand-bar:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
 /* ────────────────────────────────────────────────────────── live dot */
 
@@ -410,12 +606,24 @@ button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent)
 /* ─────────────────────────────────────────────────────────── json view */
 
 .json-view details { margin-left: 15px; }
-.json-view summary { cursor: pointer; list-style: none; }
+/* A wider hit area and a rotating marker: the tree is the densest set of
+   expandables on the page, and a bare ▸ is a 6px target. */
+.json-view summary {
+  cursor: pointer; list-style: none;
+  display: flex; align-items: baseline; gap: 4px;
+  padding: 1px 6px 1px 2px; margin-left: -2px;
+  border-radius: 6px;
+  transition: background .12s, color .12s;
+}
+.json-view summary:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent); }
 .json-view summary::-webkit-details-marker { display: none; }
 .json-view summary::before {
-  content: '▸'; display: inline-block; width: 12px; color: var(--dim);
+  content: '▸'; display: inline-block; width: 12px; flex: none;
+  color: var(--dim);
+  transition: transform .16s;
 }
-.json-view details[open] > summary::before { content: '▾'; }
+.json-view summary:hover::before { color: var(--accent); }
+.json-view details[open] > summary::before { transform: rotate(90deg); }
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -423,4 +631,37 @@ button.stat-row:hover .stat-share { background: color-mix(in srgb, var(--accent)
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ─────────────────────────────────────────────────────── theme switch */
+
+/* Two states, both visible: you can see which one you are in and what the
+   other one is without opening anything. */
+/* It floats over whatever is scrolling underneath, so it sits below the
+   drawer (z 50) and its backdrop (z 40) — open the inspector and the switch
+   dims away with the rest of the page instead of hovering on top of it. */
+.theme-dock {
+  position: fixed; top: 14px; right: 18px; z-index: 35;
+}
+.theme-switch {
+  display: inline-flex; padding: 2px; gap: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: 0 2px 10px rgb(0 0 0 / .06);
+}
+.theme-opt {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3.5px 9px;
+  border: 0; border-radius: 999px;
+  background: none; color: var(--dim);
+  font: inherit; font-size: 11px; font-weight: 500; line-height: 1;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.theme-opt:hover { color: color-mix(in srgb, var(--accent) 90%, var(--dim)); }
+.theme-opt[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
 }
