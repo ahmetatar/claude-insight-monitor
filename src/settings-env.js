@@ -6,7 +6,7 @@
  * every `claude` you launch afterwards, in any terminal, with no export.
  *
  * The flip side is that a stale key silently points every future session at a
- * dead proxy, so every write is journalled to `.cxt-proxy/settings-patch.json`
+ * dead proxy, so every write is journalled to `.cmon/settings-patch.json`
  * and `repair()` removes an orphaned key when the proxy is not running.
  */
 
@@ -30,7 +30,7 @@ function readJson(file) {
 }
 
 function writeJsonAtomic(file, value) {
-  const tmp = `${file}.cxt-tmp`;
+  const tmp = `${file}.cmon-tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, file);
 }

@@ -93,7 +93,7 @@ async function startProxy() {
   const child = spawn(process.execPath, [RUN_SCRIPT], {
     detached: true,
     stdio: ['ignore', out, out],
-    env: { ...process.env, CXT_PROXY_PORT: String(port) },
+    env: { ...process.env, CMON_PORT: String(port) },
   });
   child.unref();
 

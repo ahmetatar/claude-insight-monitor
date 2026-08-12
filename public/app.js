@@ -4,7 +4,7 @@
    colours only JavaScript can hand to Chart.js and the SVG gauge. They are
    mutated in place rather than rebound, so every render site keeps reading
    the same object after a theme switch. */
-const THEME_KEY = 'context-dump:theme';
+const THEME_KEY = 'cmon:theme';
 
 let DARK = document.documentElement.classList.contains('dark');
 
@@ -397,7 +397,7 @@ function renderDetail() {
 /* On a board of eleven panels, the ones you are not reading are noise. Each
    card's title block is its own collapse control, and which cards are folded
    survives a reload — the layout you arrived at is the layout you keep. */
-const COLLAPSE_KEY = 'context-dump:collapsed-cards';
+const COLLAPSE_KEY = 'cmon:collapsed-cards';
 
 function loadCollapsed() {
   try {

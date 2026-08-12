@@ -7,11 +7,11 @@ const path = require('path');
 /**
  * One store per machine, not per working directory — the CLI is installed
  * globally, so `cmon` must see the same captures wherever it runs.
- * Override with CXT_PROXY_HOME when you want a project-local store.
+ * Override with CMON_HOME when you want a project-local store.
  */
-const RUNTIME_DIR = process.env.CXT_PROXY_HOME
-  ? path.resolve(process.env.CXT_PROXY_HOME)
-  : path.join(os.homedir(), '.cxt-proxy');
+const RUNTIME_DIR = process.env.CMON_HOME
+  ? path.resolve(process.env.CMON_HOME)
+  : path.join(os.homedir(), '.cmon');
 const CAPTURES_DIR = path.join(RUNTIME_DIR, 'captures');
 
 function ensureDirs() {

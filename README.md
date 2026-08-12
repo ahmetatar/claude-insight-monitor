@@ -6,7 +6,7 @@ behaved the way it did, which of those requests were not the conversation at all
 and what each part of it cost.
 
 Nothing is sent anywhere. The proxy forwards to the real API and keeps a copy on
-disk under `~/.cxt-proxy/captures/`.
+disk under `~/.cmon/captures/`.
 
 ---
 
@@ -165,9 +165,9 @@ set yourself, `cmon` leaves it alone and hands you an `export` line instead.
 
 | Variable | Meaning |
 | --- | --- |
-| `CXT_PROXY_HOME` | Where the pid file, log and captures live. Default `~/.cxt-proxy`. Set it per project if you want separate stores. |
-| `CXT_PROXY_PORT` | Port for the proxy process itself; set for you by `cmon`. |
-| `CXT_PROXY_HOST` | Bind address. Default `127.0.0.1` — set `0.0.0.0` only if you deliberately want it reachable from the network. |
+| `CMON_HOME` | Where the pid file, log and captures live. Default `~/.cmon`. Set it per project if you want separate stores. |
+| `CMON_PORT` | Port for the proxy process itself; set for you by `cmon`. |
+| `CMON_HOST` | Bind address. Default `127.0.0.1` — set `0.0.0.0` only if you deliberately want it reachable from the network. |
 | `ANTHROPIC_API_KEY` | Optional, and only used by **Measure exactly** and **Replay**. When set, the proxy never reuses Claude Code's own credential for them. |
 
 ---
@@ -192,7 +192,7 @@ at a proxy that is no longer listening, and the failure looks like a broken API
 key. Three safeguards:
 
 1. **Journalled writes.** Every value written is recorded in
-   `~/.cxt-proxy/settings-patch.json`. Reverting removes only that exact value.
+   `~/.cmon/settings-patch.json`. Reverting removes only that exact value.
 2. **Your own value is never touched.** If `settings.json` already sets
    `ANTHROPIC_BASE_URL`, `cmon` says so and falls back to the export line.
 3. **Self-repair on startup.** If our key is still there while the proxy is down,
@@ -682,7 +682,7 @@ public/                 the UI (no build step — Tailwind + Chart.js from CDN)
 
 ## Notes
 
-- Captures contain your full prompts and tool output. `~/.cxt-proxy/` is plain
+- Captures contain your full prompts and tool output. `~/.cmon/` is plain
   text on disk; delete it when you're done.
-- The proxy binds to `127.0.0.1` only, unless you set `CXT_PROXY_HOST`.
+- The proxy binds to `127.0.0.1` only, unless you set `CMON_HOST`.
 - Requires Node 18+.
