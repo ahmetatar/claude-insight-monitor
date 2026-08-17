@@ -9,7 +9,7 @@ const THEME_KEY = 'cmon:theme';
 let DARK = document.documentElement.classList.contains('dark');
 
 const PALETTES = {
-  dark: { ink: '#EFEEF4', dim: '#848A9C', edge: '#20232B', panel: '#101216', accent: '#E8825C' },
+  dark: { ink: '#EFEEF4', dim: '#A0A6BA', edge: '#363C48', panel: '#101216', accent: '#E8825C' },
   light: { ink: '#14151A', dim: '#6A6E7E', edge: '#E2E2EA', panel: '#FFFFFF', accent: '#C4562F' },
 };
 
@@ -283,7 +283,7 @@ async function deleteSession(sessionId) {
 function renderSessionList() {
   const ul = el('session-list');
   if (!state.sessions.length) {
-    ul.innerHTML = `<li class="px-3 py-2 text-[11.5px] leading-relaxed text-dim dark:text-dim-dk">
+    ul.innerHTML = `<li class="px-3 py-2 text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">
       No sessions yet. Send a prompt through the proxy to see it here.</li>`;
     return;
   }
@@ -300,7 +300,7 @@ function renderSessionList() {
       <span class="block font-mono text-[11.5px] truncate ${
         active ? 'text-accent dark:text-accent-dk font-semibold' : 'text-ink dark:text-ink-dk'
       }">${escapeHtml(s.sessionId)}</span>
-      <span class="mt-1 flex justify-between text-[10.5px] tabular-nums text-dim dark:text-dim-dk">
+      <span class="mt-1 flex justify-between text-[11.5px] tabular-nums text-dim dark:text-dim-dk">
         <span>${s.turnCount} turn${s.turnCount === 1 ? '' : 's'}</span>
         <span>${escapeHtml(relativeTime(s.lastActiveAt))}</span>
       </span>`;
@@ -600,7 +600,7 @@ function renderStats(turn) {
     const v = usage[s.key];
     return `
       <div class="min-w-0">
-        <dt class="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk">
+        <dt class="flex items-center gap-2 font-mono text-[11.5px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk">
           <span class="w-1.5 h-1.5 rounded-full inline-block shrink-0" style="background:${s.color}"></span>
           <span class="truncate">${escapeHtml(s.label)}</span>
         </dt>
@@ -638,8 +638,8 @@ function renderTools() {
           <span class="font-mono text-[12px] truncate" title="${escapeHtml(tool.name)}">${escapeHtml(tool.name)}</span>
           ${
             unused
-              ? '<span class="font-mono text-[10px] uppercase tracking-[0.1em] text-dim dark:text-dim-dk shrink-0">never called</span>'
-              : `<span class="font-mono text-[10.5px] tabular-nums shrink-0" style="color:var(--signal)">×${tool.calls}</span>`
+              ? '<span class="font-mono text-[11.5px] uppercase tracking-[0.1em] text-dim dark:text-dim-dk shrink-0">never called</span>'
+              : `<span class="font-mono text-[11.5px] tabular-nums shrink-0" style="color:var(--signal)">×${tool.calls}</span>`
           }
         </div>
         <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
@@ -676,7 +676,7 @@ function renderTools() {
   );
 
   el('tools-foot').innerHTML = lines
-    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .map((line) => `<div class="font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">${line}</div>`)
     .join('');
 }
 
@@ -707,7 +707,7 @@ function renderPrompt(turn) {
           <span class="text-[13.5px] font-semibold tracking-tight truncate">${escapeHtml(section.label)}</span>
           ${
             section.state
-              ? `<span class="font-mono text-[10px] uppercase tracking-[0.1em]" style="color:var(--warn)">${section.state}</span>`
+              ? `<span class="font-mono text-[11.5px] uppercase tracking-[0.1em]" style="color:var(--warn)">${section.state}</span>`
               : ''
           }
         </div>
@@ -731,7 +731,7 @@ function renderPrompt(turn) {
         <div class="stat-row">
           <div class="min-w-0 flex items-center gap-2.5">
             <span class="font-mono text-[11.5px] truncate">${escapeHtml(reminder.kind)}</span>
-            ${reminder.count > 1 ? `<span class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums">×${reminder.count}</span>` : ''}
+            ${reminder.count > 1 ? `<span class="font-mono text-[11.5px] text-dim dark:text-dim-dk tabular-nums">×${reminder.count}</span>` : ''}
           </div>
           <div class="font-mono text-[12px] tabular-nums text-right shrink-0">${compactNum(reminder.tokens)}</div>
         </div>`
@@ -756,7 +756,7 @@ function renderPromptChanges() {
   const foot = el('prompt-foot');
   if (!changes.length) {
     foot.innerHTML =
-      '<div class="font-mono text-[11px] text-dim dark:text-dim-dk">unchanged across every turn of this session</div>';
+      '<div class="font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">unchanged across every turn of this session</div>';
     return;
   }
 
@@ -772,7 +772,7 @@ function renderPromptChanges() {
 
   foot.innerHTML = `
     <div class="flex flex-col gap-3">
-      <div class="font-mono text-[11px] text-dim dark:text-dim-dk">the system prompt changed on ${
+      <div class="font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">the system prompt changed on ${
         changes.length
       } turn${changes.length === 1 ? '' : 's'} — each one also ends the cached prefix there</div>
       <div class="flex flex-wrap gap-2">${chips}</div>
@@ -825,13 +825,13 @@ function renderThreads() {
             thread.kind === 'subagent' ? 'var(--signal)' : 'var(--accent)'
           }"></span>
           <span class="text-[13.5px] font-semibold tracking-tight truncate">${escapeHtml(label)}</span>
-          <span class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums shrink-0">${thread.turns} turn${
+          <span class="font-mono text-[11.5px] text-dim dark:text-dim-dk tabular-nums shrink-0">${thread.turns} turn${
             thread.turns === 1 ? '' : 's'
           }</span>
         </div>
         <div class="font-mono text-[12px] tabular-nums text-right shrink-0">${money(thread.cost)}</div>
-        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk truncate">${spawn}</div>
-        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums text-right shrink-0">${compactNum(
+        <div class="font-mono text-[11.5px] text-dim dark:text-dim-dk truncate">${spawn}</div>
+        <div class="font-mono text-[11.5px] text-dim dark:text-dim-dk tabular-nums text-right shrink-0">${compactNum(
           thread.billedTokens
         )} in · ${compactNum(thread.outputTokens)} out</div>
         <div class="stat-share"><span style="width:${((thread.billedTokens / max) * 100).toFixed(1)}%;background:${
@@ -860,7 +860,7 @@ function renderThreads() {
   }
   lines.push('which call spawned which thread is inferred from ordering, not stated on the wire');
   el('threads-foot').innerHTML = lines
-    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .map((line) => `<div class="font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">${line}</div>`)
     .join('');
 }
 
@@ -1007,7 +1007,7 @@ function renderDiff(diff, a, b) {
       <div class="stat-row">
         <div class="min-w-0 font-mono text-[12px] truncate">${escapeHtml(label)}</div>
         <div class="font-mono text-[12px] tabular-nums text-right shrink-0">${value}</div>
-        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk truncate" title="${escapeHtml(note)}">${escapeHtml(note)}</div>
+        <div class="font-mono text-[11.5px] text-dim dark:text-dim-dk truncate" title="${escapeHtml(note)}">${escapeHtml(note)}</div>
       </div>`
     )
     .join('');
@@ -1103,7 +1103,7 @@ function renderReplayResult() {
   const panel = el('replay-result');
   if (state.replayError) {
     panel.hidden = false;
-    panel.innerHTML = `<div class="font-mono text-[11px]" style="color:var(--danger)">${escapeHtml(state.replayError)}</div>`;
+    panel.innerHTML = `<div class="font-mono text-[11.5px]" style="color:var(--danger)">${escapeHtml(state.replayError)}</div>`;
     return;
   }
 
@@ -1133,7 +1133,7 @@ function renderReplayResult() {
       ${rows
         .map(
           ([label, a, b]) => `
-        <div class="font-mono text-[11px] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</div>
+        <div class="font-mono text-[11.5px] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</div>
         <div class="font-mono text-[12px] tabular-nums truncate" title="${escapeHtml(String(a))}">${escapeHtml(String(a))}</div>
         <div class="font-mono text-[12px] tabular-nums truncate" title="${escapeHtml(String(b))}">${escapeHtml(String(b))}</div>`
         )
@@ -1237,7 +1237,7 @@ function renderMeasure() {
 
   if (state.measureError) {
     panel.hidden = false;
-    panel.innerHTML = `<div class="font-mono text-[11px]" style="color:var(--danger)">${escapeHtml(state.measureError)}</div>`;
+    panel.innerHTML = `<div class="font-mono text-[11.5px]" style="color:var(--danger)">${escapeHtml(state.measureError)}</div>`;
     return;
   }
   if (!result) {
@@ -1271,7 +1271,7 @@ function renderMeasure() {
         )
         .join('')}
     </div>
-    <div class="mt-5 font-mono text-[11px] text-dim dark:text-dim-dk">
+    <div class="mt-5 font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">
       ${
         off == null
           ? ''
@@ -1349,9 +1349,9 @@ function renderNetwork(turn) {
     .map(
       ([label, value, sub]) => `
       <div class="min-w-0">
-        <dt class="font-mono text-[10px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</dt>
+        <dt class="font-mono text-[11.5px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</dt>
         <dd class="m-0 mt-2.5 text-[26px] font-semibold tracking-[-0.035em] tabular-nums leading-none">${escapeHtml(value)}</dd>
-        ${sub ? `<div class="mt-2 font-mono text-[10.5px] text-dim dark:text-dim-dk">${escapeHtml(sub)}</div>` : ''}
+        ${sub ? `<div class="mt-2 font-mono text-[11.5px] text-dim dark:text-dim-dk">${escapeHtml(sub)}</div>` : ''}
       </div>`
     )
     .join('');
@@ -1376,7 +1376,7 @@ function renderRateLimits(net) {
       <div class="stat-row">
         <div class="min-w-0 flex items-center gap-2.5">
           <span class="font-mono text-[12px] truncate">${escapeHtml(row.resource)}</span>
-          ${row.status ? `<span class="font-mono text-[10.5px] text-dim dark:text-dim-dk">${escapeHtml(row.status)}</span>` : ''}
+          ${row.status ? `<span class="font-mono text-[11.5px] text-dim dark:text-dim-dk">${escapeHtml(row.status)}</span>` : ''}
         </div>
         <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
           ${row.remaining != null ? escapeHtml(String(row.remaining)) : '—'}${
@@ -1390,7 +1390,7 @@ function renderRateLimits(net) {
         }
         ${
           row.reset
-            ? `<div class="font-mono text-[10.5px] text-dim dark:text-dim-dk">resets ${escapeHtml(String(row.reset))}</div>`
+            ? `<div class="font-mono text-[11.5px] text-dim dark:text-dim-dk">resets ${escapeHtml(String(row.reset))}</div>`
             : ''
         }
       </div>`;
@@ -1436,7 +1436,7 @@ function renderNetworkFoot(net) {
   }
 
   el('network-foot').innerHTML = lines
-    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .map((line) => `<div class="font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">${line}</div>`)
     .join('');
 }
 
@@ -1470,12 +1470,12 @@ function renderThinking(turn) {
     ? thinking.shape
         .map(
           (type, i) =>
-            `${i ? '<span class="font-mono text-[11px] text-dim dark:text-dim-dk">→</span>' : ''}<span class="pill"${
+            `${i ? '<span class="font-mono text-[11.5px] text-dim dark:text-dim-dk">→</span>' : ''}<span class="pill"${
               type.includes('thinking') ? ' style="color:var(--signal);border-color:currentColor"' : ''
             }>${escapeHtml(BLOCK_LABEL[type] || type)}</span>`
         )
         .join('')
-    : '<span class="font-mono text-[11px] text-dim dark:text-dim-dk">no content blocks</span>';
+    : '<span class="font-mono text-[11.5px] text-dim dark:text-dim-dk">no content blocks</span>';
 
   el('thinking-meter').style.width = `${Math.min(100, pct)}%`;
   el('thinking-meter').style.background = 'var(--signal)';
@@ -1536,7 +1536,7 @@ function renderThinkingFoot(thinking) {
   }
 
   el('thinking-foot').innerHTML = lines
-    .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+    .map((line) => `<div class="font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">${line}</div>`)
     .join('');
 }
 
@@ -1612,7 +1612,7 @@ function renderTrajectory() {
   foot.innerHTML = `
     <div class="flex flex-col gap-3">
       ${lines
-        .map((line) => `<div class="font-mono text-[11px] text-dim dark:text-dim-dk">${line}</div>`)
+        .map((line) => `<div class="font-mono text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">${line}</div>`)
         .join('')}
       ${chips ? `<div class="flex flex-wrap gap-2">${chips}</div>` : ''}
     </div>`;
@@ -1688,16 +1688,16 @@ function renderCalls() {
         <div class="min-w-0 flex items-center gap-2.5">
           <span class="dot" style="background:${GROUP_COLOR[r.group] || GROUP_COLOR.background}"></span>
           <span class="text-[13.5px] font-semibold tracking-tight truncate">${escapeHtml(r.label)}</span>
-          <span class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums shrink-0">×${r.count}</span>
+          <span class="font-mono text-[11.5px] text-dim dark:text-dim-dk tabular-nums shrink-0">×${r.count}</span>
         </div>
         <div class="font-mono text-[12px] tabular-nums text-right shrink-0">
           ${money(r.cost)}
           <span class="text-dim dark:text-dim-dk">· ${Math.round(share * 100)}%</span>
         </div>
-        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk truncate">
+        <div class="font-mono text-[11.5px] text-dim dark:text-dim-dk truncate">
           ${escapeHtml(r.note)} · ${[...r.models].join(', ') || '—'}
         </div>
-        <div class="font-mono text-[10.5px] text-dim dark:text-dim-dk tabular-nums text-right shrink-0">
+        <div class="font-mono text-[11.5px] text-dim dark:text-dim-dk tabular-nums text-right shrink-0">
           ${compactNum(r.tokensIn)} in · ${compactNum(r.tokensOut)} out
         </div>
         <div class="stat-share"><span style="width:${(share * 100).toFixed(1)}%;background:${GROUP_COLOR[r.group] || GROUP_COLOR.background}"></span></div>
@@ -1711,7 +1711,7 @@ function renderCalls() {
   const versions = [...new Set(state.turns.map((t) => callOf(t) && callOf(t).ccVersion).filter(Boolean))];
 
   el('calls-foot').innerHTML = `
-    <div class="flex flex-wrap items-baseline gap-x-7 gap-y-2 font-mono text-[11px] text-dim dark:text-dim-dk">
+    <div class="flex flex-wrap items-baseline gap-x-7 gap-y-2 font-mono text-[11.5px] text-dim dark:text-dim-dk">
       <span>${bgCalls} of ${totalCalls} calls run beside the conversation${
         totalCost > 0 ? `, costing ${money(bgCost)} (${Math.round((bgCost / totalCost) * 100)}%)` : ''
       }</span>
@@ -1779,7 +1779,7 @@ function renderCache(turn) {
       <span class="verdict" data-v="${c.verdict}">${escapeHtml(VERDICT_LABEL[c.verdict] || c.verdict)}</span>
       ${c.elapsedMs != null ? `<span class="pill">${duration(c.elapsedMs)} since previous turn</span>` : ''}
     </div>
-    <p class="text-[13px] leading-relaxed text-dim dark:text-dim-dk max-w-[74ch]">${cacheExplanation(c)}</p>`;
+    <p class="text-[13px] leading-relaxed text-ink/75 dark:text-ink-dk/75 max-w-[74ch]">${cacheExplanation(c)}</p>`;
 
   renderCacheStrip(turn, c);
   renderCacheCost(c);
@@ -1805,7 +1805,7 @@ function renderCacheStrip(turn, c) {
     `<span class="cache-fill" style="width:${pct(cachedUpTo)}"></span>${marks}${breakMark}`;
 
   const dot = (color, text) =>
-    `<span class="flex items-center gap-2 font-mono text-[10.5px] text-dim dark:text-dim-dk"><span class="w-1.5 h-1.5 rounded-full inline-block" style="background:${color}"></span>${text}</span>`;
+    `<span class="flex items-center gap-2 font-mono text-[11.5px] text-dim dark:text-dim-dk"><span class="w-1.5 h-1.5 rounded-full inline-block" style="background:${color}"></span>${text}</span>`;
   el('cache-strip-legend').innerHTML = [
     dot('color-mix(in srgb, var(--accent) 45%, transparent)', `cached prefix ≈${compactNum(cachedUpTo)} of ${compactNum(total)} tokens`),
     c.breakpoints.length ? dot('var(--accent)', `${c.breakpoints.length} breakpoint${c.breakpoints.length === 1 ? '' : 's'}`) : '',
@@ -1829,9 +1829,9 @@ function renderCacheCost(c) {
     .map(
       ([label, value, sub]) => `
       <div class="min-w-0">
-        <dt class="font-mono text-[10px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</dt>
+        <dt class="font-mono text-[11.5px] uppercase tracking-[0.12em] text-dim dark:text-dim-dk truncate">${escapeHtml(label)}</dt>
         <dd class="m-0 mt-2.5 text-[26px] font-semibold tracking-[-0.035em] tabular-nums leading-none">${value}</dd>
-        ${sub ? `<div class="mt-2 font-mono text-[10.5px] text-dim dark:text-dim-dk">${escapeHtml(sub)}</div>` : ''}
+        ${sub ? `<div class="mt-2 font-mono text-[11.5px] text-dim dark:text-dim-dk">${escapeHtml(sub)}</div>` : ''}
       </div>`
     )
     .join('');
@@ -1855,7 +1855,7 @@ function renderCacheSession() {
     .join(' · ');
 
   el('cache-session').innerHTML = `
-    <div class="flex flex-wrap items-baseline gap-x-7 gap-y-2 font-mono text-[11px] text-dim dark:text-dim-dk">
+    <div class="flex flex-wrap items-baseline gap-x-7 gap-y-2 font-mono text-[11.5px] text-dim dark:text-dim-dk">
       <span>session ${counts || '—'}</span>
       <span>${money(actual)} spent, ${money(uncached)} without cache</span>
       ${rewritten ? `<span>≈${compactNum(rewritten)} tokens rewritten after a prefix change</span>` : ''}
@@ -1917,7 +1917,7 @@ function renderHistoryChart(points) {
           align: 'start',
           labels: {
             color: THEME.dim,
-            font: { family: MONO, size: 10.5 },
+            font: { family: MONO, size: 11.5 },
             boxWidth: 8,
             boxHeight: 8,
             usePointStyle: true,
@@ -1935,8 +1935,8 @@ function renderHistoryChart(points) {
           cornerRadius: 9,
           displayColors: true,
           usePointStyle: true,
-          titleFont: { family: MONO, size: 10 },
-          bodyFont: { family: MONO, size: 11 },
+          titleFont: { family: MONO, size: 11.5 },
+          bodyFont: { family: MONO, size: 11.5 },
           callbacks: {
             title: (items) => `turn ${items[0]?.label ?? ''}`,
             label: (item) => ` ${item.dataset.label}: ${compactNum(item.parsed.y)}`,
@@ -1947,13 +1947,13 @@ function renderHistoryChart(points) {
         x: {
           grid: { display: false },
           border: { color: THEME.edge },
-          ticks: { color: THEME.dim, font: { family: MONO, size: 9.5 }, maxRotation: 0, autoSkipPadding: 24 },
+          ticks: { color: THEME.dim, font: { family: MONO, size: 11.5 }, maxRotation: 0, autoSkipPadding: 24 },
         },
         y: {
           beginAtZero: true,
           grid: { color: THEME.edge, drawTicks: false },
           border: { display: false },
-          ticks: { color: THEME.dim, font: { family: MONO, size: 9.5 }, padding: 10, callback: (v) => compactNum(v) },
+          ticks: { color: THEME.dim, font: { family: MONO, size: 11.5 }, padding: 10, callback: (v) => compactNum(v) },
         },
       },
     },
@@ -1989,7 +1989,7 @@ function renderBreakdown(turn) {
   if (!breakdown || !breakdown.sections.length) {
     barEl.innerHTML = '';
     legendEl.innerHTML = '';
-    detailEl.innerHTML = '<p class="text-[12px] text-dim dark:text-dim-dk">No request body captured for this turn.</p>';
+    detailEl.innerHTML = '<p class="text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">No request body captured for this turn.</p>';
     return;
   }
 
@@ -2015,12 +2015,12 @@ function renderBreakdown(turn) {
           <div class="flex items-center gap-2 min-w-0">
             <span class="w-1.5 h-1.5 rounded-full inline-block shrink-0" style="background:${color}"></span>
             <span class="text-[12.5px] font-semibold truncate">${escapeHtml(g.name)}</span>
-            <span class="ml-auto font-mono text-[11px] tabular-nums text-dim dark:text-dim-dk">${pct.toFixed(0)}%</span>
+            <span class="ml-auto font-mono text-[11.5px] tabular-nums text-dim dark:text-dim-dk">${pct.toFixed(0)}%</span>
           </div>
           <div class="mt-2.5 text-[21px] font-semibold tracking-[-0.03em] tabular-nums leading-none">${compactNum(
             Math.round(g.chars / 4)
-          )}<span class="ml-1 text-[11px] font-normal text-dim dark:text-dim-dk">tok</span></div>
-          <div class="mt-1.5 font-mono text-[10.5px] text-dim dark:text-dim-dk">${g.count} item${g.count === 1 ? '' : 's'}</div>
+          )}<span class="ml-1 text-[11.5px] font-normal text-dim dark:text-dim-dk">tok</span></div>
+          <div class="mt-1.5 font-mono text-[11.5px] text-dim dark:text-dim-dk">${g.count} item${g.count === 1 ? '' : 's'}</div>
         </div>`;
     })
     .join('');
@@ -2078,7 +2078,7 @@ function renderBreakdown(turn) {
 
     rowsEl.innerHTML = '';
     if (!filtered.length) {
-      rowsEl.innerHTML = '<p class="text-[11.5px] text-dim dark:text-dim-dk">No sections match.</p>';
+      rowsEl.innerHTML = '<p class="text-[12.5px] text-ink/75 dark:text-ink-dk/75">No sections match.</p>';
       return;
     }
     for (const s of filtered) {
@@ -2087,10 +2087,10 @@ function renderBreakdown(turn) {
       row.className = 'section-row min-w-0';
       row.innerHTML = `
         <div class="flex items-baseline gap-3 mb-1.5 min-w-0">
-          <span class="font-mono text-[11px] text-dim dark:text-dim-dk truncate" title="${escapeHtml(s.label)}">${escapeHtml(
+          <span class="font-mono text-[11.5px] text-dim dark:text-dim-dk truncate" title="${escapeHtml(s.label)}">${escapeHtml(
         s.label
       )}</span>
-          <span class="ml-auto font-mono text-[11px] tabular-nums whitespace-nowrap">${compactNum(s.approxTokens)} tok</span>
+          <span class="ml-auto font-mono text-[11.5px] tabular-nums whitespace-nowrap">${compactNum(s.approxTokens)} tok</span>
           <span class="row-chevron self-center">${icon('chevron-right', 'ico-xs')}</span>
         </div>
         <div class="meter"><span style="width:${(s.chars / maxChars) * 100}%;background:${colorFor(s.label)}"></span></div>`;
@@ -2261,7 +2261,7 @@ function renderToolDetail(body, tool) {
         </div>
         ${
           p.description
-            ? `<p class="mt-1.5 text-[11.5px] leading-relaxed text-dim dark:text-dim-dk">${escapeHtml(
+            ? `<p class="mt-1.5 text-[12.5px] leading-relaxed text-ink/75 dark:text-ink-dk/75">${escapeHtml(
                 String(p.description).slice(0, 400)
               )}${String(p.description).length > 400 ? '…' : ''}</p>`
             : ''
@@ -2319,7 +2319,7 @@ function renderContentBlocks(body, content, title) {
       const wrap = document.createElement('div');
       wrap.className = 'flex flex-col gap-2';
       if (b.tool_use_id) {
-        wrap.innerHTML = `<div class="font-mono text-[10.5px] text-dim dark:text-dim-dk">for ${escapeHtml(b.tool_use_id)}</div>`;
+        wrap.innerHTML = `<div class="font-mono text-[11.5px] text-dim dark:text-dim-dk">for ${escapeHtml(b.tool_use_id)}</div>`;
       }
       const inner = b.content;
       const flat =
@@ -2468,6 +2468,36 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowLeft' || e.key === 'k') selectTurn(state.turnIndex - 1);
   if (e.key === 'ArrowRight' || e.key === 'j') selectTurn(state.turnIndex + 1);
 });
+
+/* ------------------------------------------------------ inspection guard */
+
+/* `state.pinned` used to flip on only when the user picked an older turn —
+   so a live turn arriving while they were merely scrolled down or mid-way
+   through expanding a card on the *latest* turn still counted as "not
+   pinned" and triggered the full renderDetail() in the SSE handler below,
+   wiping scroll position, open panels and the drawer out from under them.
+   Anything that looks like "the user is looking at this" — scrolling away
+   from the top, or interacting with a card or the drawer — now pins the
+   view exactly like navigating to an older turn does. Only the explicit
+   "follow" control (or picking the newest turn directly) lets go again. */
+function pinFromInspection() {
+  if (state.pinned || !state.turns.length) return;
+  state.pinned = true;
+  renderRibbon();
+}
+
+window.addEventListener(
+  'scroll',
+  () => {
+    if (window.scrollY > 32) pinFromInspection();
+  },
+  { passive: true },
+);
+
+for (const target of [el('detail'), el('drawer')]) {
+  target.addEventListener('click', pinFromInspection, true);
+  target.addEventListener('input', pinFromInspection, true);
+}
 
 /* ------------------------------------------------------------------- SSE */
 
