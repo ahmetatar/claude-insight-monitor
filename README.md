@@ -8,6 +8,13 @@ and what each part of it cost.
 Nothing is sent anywhere. The proxy forwards to the real API and keeps a copy on
 disk under `~/.cmon/captures/`.
 
+![The cmon dashboard: context window, history over time, and wire timings for the selected turn](https://raw.githubusercontent.com/ahmetatar/claude-insight-monitor/main/docs/screenshots/dashboard.png)
+
+Every turn of a session, one page. Below the fold it keeps going — where the
+cache broke and what that cost, and what the window is actually full of:
+
+![Cache forensics and context breakdown: $8.11 spent against $51.87 without caching, 58% of the window taken by tool definitions](https://raw.githubusercontent.com/ahmetatar/claude-insight-monitor/main/docs/screenshots/cache-and-context.png)
+
 ---
 
 ## What it's for
