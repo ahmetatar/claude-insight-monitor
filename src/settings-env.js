@@ -30,6 +30,9 @@ function readJson(file) {
 }
 
 function writeJsonAtomic(file, value) {
+  // A machine that has never run `claude` has no ~/.claude yet, and the atomic
+  // write lands in that directory before the rename does.
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.cmon-tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, file);

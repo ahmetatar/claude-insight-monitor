@@ -44,14 +44,24 @@ can do something about.
 ## Install
 
 ```sh
-git clone <this repo> && cd claude-insight-monitor
-npm link          # symlinks `cmon` onto your PATH
+npm install -g claude-insight-monitor
 ```
 
-`npm link` points at the working copy, so edits take effect immediately. For a
-fixed snapshot instead, use `npm install -g .`. To remove it: `npm unlink -g claude-insight-monitor`.
+That puts one command, `cmon`, on your PATH. Needs Node 18 or newer. No
+dependencies — Node's standard library only.
 
-No dependencies — Node's standard library only.
+Prefer not to install it? `npx claude-insight-monitor` runs the same thing
+without leaving anything behind.
+
+To remove it: `npm uninstall -g claude-insight-monitor`.
+
+Working on the code instead of using it:
+
+```sh
+git clone https://github.com/ahmetatar/claude-insight-monitor.git
+cd claude-insight-monitor
+npm link          # symlinks `cmon` at the working copy, so edits take effect immediately
+```
 
 ---
 
