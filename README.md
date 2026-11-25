@@ -222,7 +222,7 @@ a given turn hides itself rather than showing zeroes.
 
 | Card | What it shows | Layer |
 | --- | --- | --- |
-| **Context window** | A ring: how full the window is, split by input / cache read / cache write, against the model's real limit (1M variants are detected from the beta header). Below it, the four real usage numbers. | — |
+| **Context window** | A ring: how full the window is, split by input / cache read / cache write, against the model's real limit (1M for Opus/Sonnet 4.6+, Haiku 5.5, Fable and Mythos; 200K for older models unless the `context-1m` beta header is sent). Below it, the four real usage numbers. | — |
 | **Where the calls go** | Every request in the session sorted into what it actually is, with its share of the spend. | [2](#2--what-the-calls-actually-are) |
 | **Threads** | The session split into the conversation and each subagent: what each spent, what it handed back. Hidden when there is one thread. | [9](#9--threads) |
 | **Cache** | Why the cache behaved as it did: a verdict, the prefix drawn in token space with its breakpoints and the exact point where it stopped matching, the turn's cost, and its no-cache counterfactual. | [1](#1--cache-forensics) |

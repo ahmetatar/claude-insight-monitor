@@ -159,15 +159,20 @@ function contextTokens(turn) {
   return CONTEXT_KEYS.reduce((sum, k) => sum + Number(u[k] || 0), 0);
 }
 
-/* The 1M window is negotiated via the anthropic-beta header, not the model id:
-   Claude Code's "[1m]" suffix is an internal alias and never reaches the wire
-   (the body carries a plain "claude-opus-5"). The model id is kept only as a
-   fallback for captures recorded before the header was stored. */
+/* The window size follows the model family. Claude Opus 4.6 and later,
+   Sonnet 4.6 and later, Haiku 5.5, and every Fable and Mythos model run 1M by
+   default with no beta header; Haiku 4.5 and the pre-4.6 models are 200K
+   unless the request opts into the context-1m beta. Claude Code's "[1m]"
+   suffix is an internal alias and never reaches the wire, but older captures
+   may carry it in the stored model id. */
+const ONE_M_NATIVE = /^claude-(?:opus-(?:4-[6-9]|[5-9])|sonnet-(?:4-[6-9]|[5-9])|haiku-(?:5-[5-9]|[6-9])|fable-|mythos-)/i;
+
 function contextLimit(turn) {
   const beta = String((turn && turn.request && turn.request.anthropicBeta) || '');
   if (/context-1m/i.test(beta)) return 1_000_000;
   const model = String((turn && turn.request && turn.request.model) || '');
-  return /\[1m\]|-1m\b|1m\]/i.test(model) ? 1_000_000 : 200_000;
+  if (/\[1m\]|-1m\b/i.test(model)) return 1_000_000;
+  return ONE_M_NATIVE.test(model) ? 1_000_000 : 200_000;
 }
 
 /* --------------------------------------------------------------- data */
