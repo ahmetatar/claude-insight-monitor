@@ -74,20 +74,20 @@ npm link          # symlinks `cmon` at the working copy, so edits take effect im
 
 ## Quick start
 
-Two terminals. In the first:
+Run `cmon` where you would run `claude`:
 
 ```sh
 cmon
 ```
 
-It brings the proxy up, writes `ANTHROPIC_BASE_URL` into `~/.claude/settings.json`,
-and waits. In the second terminal, just run `claude` — no export needed. Open
-<http://localhost:8787> to watch the context fill up live.
+It brings the proxy up and starts `claude` for you, pointed at it. Open
+<http://localhost:8787> to watch the context fill up live. Only that session goes
+through the proxy; any `claude` already open elsewhere is left alone.
 
-When you're done, press **Enter** in the first terminal. The proxy stops and the
-settings key is removed.
+When you quit claude, cmon quits with it and the proxy stops.
 
-That is the whole interface. There are no subcommands and no flags to remember.
+That is the whole interface. Any arguments go straight to `claude`
+(`cmon --resume`, `cmon -p "…"`); cmon has no flags of its own.
 
 ---
 
@@ -162,21 +162,16 @@ estimate was, which calibrates every other number on the page.
 
 ## The command
 
-One command, no arguments: `cmon`. It starts the proxy, points Claude Code at
-it, prints the UI link, and waits.
+One command: `cmon [claude args…]`. It starts the proxy, prints the UI link, and
+runs `claude` with those arguments as its child. It exits with claude's exit code.
 
-Everything it did is undone when it ends, and every way of ending it counts:
-**Enter**, **Ctrl-C**, closing the terminal window (`SIGHUP`), or `kill`
-(`SIGTERM`). Each one removes the `settings.json` key and stops the proxy.
-Captures are kept.
+Ctrl-C belongs to claude, as it would without cmon. Closing the terminal window
+(`SIGHUP`) or `kill` (`SIGTERM`) is passed on to claude, and cmon cleans up
+after it. Captures are kept.
 
-`kill -9` is the one signal a process cannot catch, so it leaves the key behind.
-The next `cmon` notices and removes it before doing anything else — a stale key
-would otherwise point every later `claude` at a dead proxy.
-
-The port is chosen for you: `8787`, or the next free one above it if something
-already holds it. If `settings.json` already holds an `ANTHROPIC_BASE_URL` you
-set yourself, `cmon` leaves it alone and hands you an `export` line instead.
+Several cmon windows share one proxy. Each one registers itself in
+`~/.cmon/clients/`, and the last to exit stops the proxy. The port is chosen
+for you: `8787`, or the next free one above it if something already holds it.
 
 ### Environment
 
@@ -191,30 +186,21 @@ set yourself, `cmon` leaves it alone and hands you an `export` line instead.
 
 ## How Claude Code gets pointed at the proxy
 
-Claude Code needs `ANTHROPIC_BASE_URL` to reach the proxy, and there is no way
-for one process to change another terminal's environment — env is copied into a
-process at birth and never written back. So `cmon` writes the variable into the
-`env` block of `~/.claude/settings.json`, which Claude Code reads at startup.
-That reaches every `claude` you launch afterwards, in any terminal, with no
-export: the closest thing to a global switch, and the reason the second terminal
-needs nothing but `claude`.
+Claude Code needs `ANTHROPIC_BASE_URL` to reach the proxy. `cmon` sets it in the
+environment of the `claude` it launches, and nowhere else. Environment variables
+are copied into a process when it starts and never written back, so no other
+session, open or future, can see it. Nothing is written to disk, and nothing
+has to be undone if cmon is killed.
 
-The cost of a global switch is that it outlives the process that set it, which
-is what the safeguards below are for.
+If `~/.claude/settings.json` sets its own `ANTHROPIC_BASE_URL` in its `env`
+block, cmon warns you at startup. Claude Code may apply that value on top of
+the environment, and then the session would bypass the proxy.
 
-### Why a stale key is dangerous, and what stops it
-
-A leftover `ANTHROPIC_BASE_URL` in `settings.json` points every future `claude`
-at a proxy that is no longer listening, and the failure looks like a broken API
-key. Three safeguards:
-
-1. **Journalled writes.** Every value written is recorded in
-   `~/.cmon/settings-patch.json`. Reverting removes only that exact value.
-2. **Your own value is never touched.** If `settings.json` already sets
-   `ANTHROPIC_BASE_URL`, `cmon` says so and falls back to the export line.
-3. **Self-repair on startup.** If our key is still there while the proxy is down,
-   the next `cmon` removes it before starting anything. So a `kill -9` or a
-   reboot cannot strand it past the next run.
+Versions up to 0.1.1 wrote the variable into `settings.json` instead, which also
+redirected sessions that were already running. If one of them left its key
+behind (after a `kill -9` or a reboot), the next `cmon` removes it. It removes
+only the exact value journalled in `~/.cmon/settings-patch.json`, never one you
+set yourself.
 
 ---
 
@@ -693,7 +679,7 @@ src/turn-diff.js        layer 10 — structured diff between any two turns
 src/replay.js           layer 10 — re-sending a captured turn with changes
 
 src/pricing.js          list prices and the cache read/write multipliers
-src/settings-env.js     journalled read/modify/write of ~/.claude/settings.json
+src/settings-env.js     removes a settings.json key left behind by cmon ≤ 0.1.1
 public/                 the UI (no build step — Tailwind + Chart.js from CDN)
 ```
 

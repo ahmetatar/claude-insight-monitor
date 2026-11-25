@@ -2,14 +2,16 @@
 'use strict';
 
 /**
- * One command, no flags: `cmon` brings the proxy up, points Claude Code at it,
- * and undoes both when you press Enter — or when the terminal goes away.
+ * `cmon [claude args…]` brings the proxy up and runs `claude` as its child with
+ * ANTHROPIC_BASE_URL set in that child's environment only. Sessions already
+ * open elsewhere are never touched. When claude exits, so does cmon, and the
+ * proxy stops once no other cmon is still using it.
  */
 
 const fs = require('fs');
 const net = require('net');
+const os = require('os');
 const path = require('path');
-const readline = require('readline');
 const { spawn } = require('child_process');
 
 const store = require('../src/capture-store');
@@ -18,6 +20,7 @@ const settingsEnv = require('../src/settings-env');
 const RUNTIME_DIR = store.RUNTIME_DIR;
 const PID_FILE = path.join(RUNTIME_DIR, 'proxy.pid');
 const LOG_FILE = path.join(RUNTIME_DIR, 'proxy.log');
+const CLIENTS_DIR = path.join(RUNTIME_DIR, 'clients');
 const RUN_SCRIPT = path.join(__dirname, '..', 'src', 'run.js');
 
 const ENV_VAR = 'ANTHROPIC_BASE_URL';
@@ -63,7 +66,7 @@ function isFree(port) {
   });
 }
 
-/** Waits until the proxy answers, so the UI link is live when we print it. */
+/** Waits until the proxy answers, so claude's first request has somewhere to go. */
 function waitForListening(port, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve) => {
@@ -86,7 +89,7 @@ function waitForListening(port, timeoutMs = 5000) {
 async function startProxy() {
   store.ensureDirs();
   const existing = runningInfo();
-  if (existing) return { info: existing, weStarted: false };
+  if (existing) return existing;
 
   const port = await freePort(FIRST_PORT);
   const out = fs.openSync(LOG_FILE, 'a');
@@ -99,7 +102,7 @@ async function startProxy() {
 
   const info = { pid: child.pid, port, startedAt: new Date().toISOString() };
   fs.writeFileSync(PID_FILE, JSON.stringify(info, null, 2));
-  return { info, weStarted: true };
+  return info;
 }
 
 function stopProxy() {
@@ -114,93 +117,104 @@ function stopProxy() {
   return info;
 }
 
-function waitForEnter(prompt) {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(prompt, () => {
-      rl.close();
-      resolve();
-    });
-    rl.on('close', resolve);
-    rl.on('SIGINT', () => {
-      rl.close();
-      resolve();
-    });
-  });
+/*
+ * Several cmon windows can share one proxy. Each registers its pid here, and
+ * the last one out stops the proxy; a client that died without cleaning up
+ * is ignored because its pid is no longer alive.
+ */
+function registerClient() {
+  fs.mkdirSync(CLIENTS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(CLIENTS_DIR, String(process.pid)), '');
+}
+
+function unregisterClient() {
+  fs.rmSync(path.join(CLIENTS_DIR, String(process.pid)), { force: true });
+}
+
+function otherLiveClients() {
+  if (!fs.existsSync(CLIENTS_DIR)) return 0;
+  let count = 0;
+  for (const name of fs.readdirSync(CLIENTS_DIR)) {
+    const pid = Number(name);
+    if (!pid || pid === process.pid) continue;
+    if (isAlive(pid)) count += 1;
+    else fs.rmSync(path.join(CLIENTS_DIR, name), { force: true });
+  }
+  return count;
 }
 
 async function main() {
-  // Piping our output into something that exits early (`| head`) must not turn
-  // into a stack trace on the way out.
   process.stdout.on('error', (err) => {
     if (err.code !== 'EPIPE') throw err;
   });
 
-  // A `kill -9` or a reboot can strand the settings key and quietly break every
-  // later `claude`; nothing is running yet, so this is always safe to undo.
+  // Versions up to 0.1.1 wrote the URL into ~/.claude/settings.json; a key a
+  // crash left behind would still point every claude at a dead proxy.
   if (!runningInfo()) settingsEnv.repair();
 
-  const { info } = await startProxy();
+  const info = await startProxy();
   const url = `http://localhost:${info.port}`;
-  await waitForListening(info.port);
-
-  const patched = settingsEnv.apply(url);
-  const viaSettings = patched.ok;
+  if (!(await waitForListening(info.port))) {
+    throw new Error(`proxy did not come up on ${url} — see ${LOG_FILE}`);
+  }
+  registerClient();
 
   console.log('');
-  console.log(`  cmon is up — pid ${info.pid} · ${url}`);
-  console.log('');
-  if (viaSettings) {
-    console.log(`  ${ENV_VAR} written to ~/.claude/settings.json`);
-    console.log('  Every `claude` you start from now on goes through the proxy.');
-    console.log('');
-    console.log('  In your other terminal, just:');
-    console.log('    claude');
-  } else {
-    console.log(`  ! ~/.claude/settings.json already sets ${ENV_VAR}=${patched.previous}`);
-    console.log('    Leaving it alone — point Claude Code at the proxy yourself:');
-    console.log('');
-    console.log(`    export ${ENV_VAR}=${url}`);
-    console.log('    claude');
+  console.log(`  cmon is up — pid ${info.pid} · UI: ${url}`);
+  const foreign = settingsEnv.currentValue();
+  if (foreign !== undefined) {
+    console.log(`  ! ~/.claude/settings.json sets ${ENV_VAR}=${foreign}.`);
+    console.log('    If Claude Code applies it over the environment, this session bypasses the proxy.');
   }
   console.log('');
-  console.log(`  UI: ${url}`);
-  console.log('');
+
+  const child = spawn('claude', process.argv.slice(2), {
+    stdio: 'inherit',
+    env: { ...process.env, [ENV_VAR]: url },
+    shell: process.platform === 'win32',
+  });
 
   let done = false;
   const finish = () => {
     if (done) return;
     done = true;
+    unregisterClient();
 
     console.log('');
-    if (viaSettings) {
-      const res = settingsEnv.revert();
-      console.log(
-        res.ok
-          ? `  Removed ${ENV_VAR} from ~/.claude/settings.json.`
-          : `  ! Left ${ENV_VAR}=${res.previous} in settings.json — it changed since we wrote it.`
-      );
+    if (otherLiveClients() > 0) {
+      console.log('  Proxy left running — another cmon is still using it.');
+    } else {
+      const stopped = stopProxy();
+      console.log(stopped ? `  Stopped cmon (pid ${stopped.pid}).` : '  Proxy was already gone.');
     }
-    const stopped = stopProxy();
-    console.log(stopped ? `  Stopped cmon (pid ${stopped.pid}).` : '  Proxy was already gone.');
     console.log(`  Captures: ${store.CAPTURES_DIR} · ${store.countAllTurns()} turns total`);
-    if (!viaSettings) console.log(`  Run this where you exported it: unset ${ENV_VAR}`);
+    console.log(`  UI was: ${url}`);
     console.log('');
   };
-
-  // Ctrl-C, a closed terminal window (SIGHUP) and `kill` all have to undo the
-  // settings write; only `exit` fires on its own.
   process.on('exit', finish);
-  for (const sig of ['SIGINT', 'SIGHUP', 'SIGTERM']) {
+
+  // Ctrl-C reaches claude directly through the terminal; claude decides what
+  // it means, and cmon follows when claude exits.
+  process.on('SIGINT', () => {});
+  for (const sig of ['SIGHUP', 'SIGTERM']) {
     process.on(sig, () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill(sig);
       finish();
-      process.exit(0);
+      process.exit(128 + os.constants.signals[sig]);
     });
   }
 
-  await waitForEnter('  Press Enter to stop the proxy and end the session… ');
-  finish();
-  process.exit(0);
+  child.on('error', (err) => {
+    console.error(
+      err.code === 'ENOENT'
+        ? '\ncmon: `claude` was not found on PATH.'
+        : `\ncmon: could not start claude: ${err.message}`
+    );
+    process.exit(1);
+  });
+  child.on('exit', (code, signal) => {
+    process.exit(signal ? 128 + os.constants.signals[signal] : code ?? 0);
+  });
 }
 
 main().catch((err) => {

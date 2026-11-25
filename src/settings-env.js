@@ -1,13 +1,12 @@
 'use strict';
 
 /**
- * Claude Code reads `env` out of ~/.claude/settings.json at startup, so writing
- * ANTHROPIC_BASE_URL there is the closest thing to a global switch: it reaches
- * every `claude` you launch afterwards, in any terminal, with no export.
- *
- * The flip side is that a stale key silently points every future session at a
- * dead proxy, so every write is journalled to `.cmon/settings-patch.json`
- * and `repair()` removes an orphaned key when the proxy is not running.
+ * cmon no longer writes ~/.claude/settings.json: it hands ANTHROPIC_BASE_URL to
+ * the claude it launches, and to nothing else. Versions up to 0.1.1 did write
+ * it there, journalled in `.cmon/settings-patch.json`, and running Claude Code
+ * sessions picked the change up too. A key such a version left behind points
+ * every claude at a dead proxy, so `repair()` removes exactly the journalled
+ * value, and never one you set yourself.
  */
 
 const fs = require('fs');
@@ -45,32 +44,6 @@ function currentValue() {
 
 function patchState() {
   return readJson(PATCH_FILE);
-}
-
-/**
- * Points settings.json at `url`. Refuses to touch a value this tool did not
- * write. Returns { ok, reason, previous }.
- */
-function apply(url) {
-  const existing = currentValue();
-  const state = patchState();
-
-  if (existing !== undefined && !(state && state.value === existing)) {
-    return { ok: false, reason: 'foreign-value', previous: existing };
-  }
-  if (existing === url) {
-    return { ok: true, reason: 'already-set', previous: existing };
-  }
-
-  const settings = readJson(SETTINGS_FILE) || {};
-  if (!settings.env || typeof settings.env !== 'object') settings.env = {};
-  settings.env[KEY] = url;
-
-  store.ensureDirs();
-  writeJsonAtomic(SETTINGS_FILE, settings);
-  writeJsonAtomic(PATCH_FILE, { file: SETTINGS_FILE, key: KEY, value: url, at: new Date().toISOString() });
-
-  return { ok: true, reason: 'written', previous: existing };
 }
 
 /**
@@ -113,4 +86,4 @@ function repair() {
   return { repaired: res.ok, value: existing };
 }
 
-module.exports = { KEY, SETTINGS_FILE, apply, revert, repair, currentValue, patchState };
+module.exports = { KEY, SETTINGS_FILE, revert, repair, currentValue, patchState };
