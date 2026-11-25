@@ -32,6 +32,20 @@ yapan tek şey **prompt cache**'tir. Dashboard'daki kartların çoğu bu tekrar
 gönderilen yükün neyden oluştuğunu ve cache'in onu ne kadar iyi taşıdığını
 gösterir.
 
+**Örnek: tek bir mesaj, birkaç istek.** "testleri çalıştır" yazdığını düşün.
+Proxy'den tipik olarak şöyle bir dizi geçer:
+
+```
+#41  agent loop          sen: "testleri çalıştır"  → model: tool_use Bash("npm test")
+#42  bash security check  "npm test" güvenli mi?    → küçük, araçsız bir çağrı
+#43  agent loop          + tool_result (test çıktısı) → model: "3 test kırık, ..."
+```
+
+`#41` ile `#43` neredeyse aynı istektir: aynı araçlar, aynı system prompt, aynı
+geçmiş. `#43` sadece sona bir `tool_use` + `tool_result` çifti ekler. Cache
+olmasaydı `#43`'te tüm geçmiş tam fiyatla yeniden okunurdu. Cache varken
+yalnızca yeni eklenen kuyruk tam fiyattır.
+
 ---
 
 ## 2. Temel kavramlar
@@ -56,16 +70,145 @@ Modelin okuduğu toplam girdi = `input + cache write + cache read`. Dashboard'da
 "context" (bağlam) sayısı da tam olarak bu üçünün toplamıdır; output dahil
 değildir.
 
+**Örnek hesap** (temsili sayılar, Opus liste fiyatıyla: girdi $5, çıktı $25 /
+milyon token):
+
+| Kalem | Token | Birim fiyat | Tutar |
+| --- | ---: | --- | ---: |
+| input | 200 | $5 × 1 | $0.0010 |
+| cache write (5 dk) | 3,000 | $5 × 1.25 | $0.0188 |
+| cache read | 40,000 | $5 × 0.1 | $0.0200 |
+| output | 500 | $25 | $0.0125 |
+| **toplam** | | | **≈ $0.052** |
+
+Context = 200 + 3,000 + 40,000 = **43,200** token. Aynı 43,200 token cache'siz
+gönderilseydi girdi $0.216, toplam ≈ $0.229 olurdu. Cache kartındaki **saved**
+hücresi tam olarak bu farkı (burada ≈ %77) gösterir. Gördüğün gibi 40K tokenlık
+geçmiş, 3K tokenlık yazmadan daha ucuza gelir: cache'in bütün olayı budur.
+
 ### Cache, prefix ve breakpoint
-- API cache'i **önek (prefix)** bazlı çalışır. Sıra hep aynıdır: önce araç
-  tanımları, sonra system prompt, sonra mesajlar.
-- İstekte `cache_control` ile işaretlenmiş noktalar **breakpoint**'tir. "Buraya
-  kadarını cache'le" demektir.
+- API cache'i **önek (prefix)** bazlı çalışır. İstek, cache açısından tek bir
+  uzun dizi olarak düşünülür ve sıra hep aynıdır: önce araç tanımları, sonra
+  system prompt, sonra mesajlar.
+- İstekte `cache_control` ile işaretlenmiş bloklar **breakpoint**'tir. "Baştan
+  buraya kadarını cache'le" demektir. Bir istekte en fazla **4** breakpoint
+  olabilir.
 - Bir sonraki turda önek baştan itibaren **byte byte aynıysa** o kısım cache'ten
   okunur (ucuz). Ortada bir şey değişirse, değişen noktadan sonrası yeniden
   yazılır (pahalı).
 - **TTL**: cache girdisinin ömrü (5 dk ya da 1 saat). Bu süre boyunca istek
-  gelmezse cache düşer.
+  gelmezse cache düşer. Her cache okuması süreyi **sıfırlar**, yani aktif bir
+  sohbette 5 dk'lık cache sürekli taze kalır.
+
+**İsteğin cache gözüyle hali.** Claude Code'un gönderdiği gövdenin iskeleti
+kabaca şöyledir (kısaltılmış, kendi kaydını **Raw JSON**'da görebilirsin):
+
+```jsonc
+{
+  "model": "claude-opus-5-5",
+  "tools": [                                   // ① önekin en başı
+    { "name": "Bash",  "description": "...", "input_schema": { ... } },
+    { "name": "Read",  "description": "...", "input_schema": { ... } },
+    ...
+  ],
+  "system": [                                  // ②
+    { "type": "text", "text": "You are Claude Code, ..." },
+    { "type": "text", "text": "...", "cache_control": { "type": "ephemeral" } }   // ◆ breakpoint
+  ],
+  "messages": [                                // ③ önekin sonu, her turn uzar
+    { "role": "user",      "content": [ ... ] },
+    { "role": "assistant", "content": [ ... ] },
+    ...
+    { "role": "user", "content": [
+        { "type": "tool_result", "content": "...",
+          "cache_control": { "type": "ephemeral" } }                               // ◆ breakpoint
+    ] }
+  ]
+}
+```
+
+Cache bunu düz bir dizi olarak görür:
+
+```
+[Bash][Read]...[system 0][system 1◆][msg 0][msg 1]...[msg 37◆]
+ └──────── araçlar ──────┘└─ system ─┘└──────── mesajlar ───────┘
+```
+
+**Turn'den turn'e ne olur?** Claude Code her turda son breakpoint'i yeni son
+mesaja **kaydırır** (rolling breakpoint):
+
+```
+turn N    [tools][system◆][m0 … m37◆]
+turn N+1  [tools][system◆][m0 … m37 ][m38 m39◆]
+           └──────── cache read ─────┘└ write ┘
+```
+
+- `m0 … m37` önceki turn'de cache'lenmişti ve değişmedi → **cache read**.
+- `m38 m39` yeni → **cache write** (bir sonraki turn'de bunlar da okunacak).
+- Son breakpoint'ten sonra bir şey kalırsa → düz **input**.
+
+Bu yüzden sağlıklı bir sohbette her turn'ün `cache read`'i kabaca bir önceki
+turn'ün `cache read + cache write` toplamına eşittir. Bu kural bozulduğunda
+Cache kartı **partial hit** ya da **miss** der.
+
+Not: `cache_control` işaretinin kendisi içeriğin parçası sayılmaz. İşaret
+`m37`'den `m39`'a taşındı diye `m37` "değişmiş" olmaz. cmon da karşılaştırma
+yaparken bu işareti yok sayar.
+
+**Perde arkasında eşleşme nasıl çalışır?**
+- Sunucu, breakpoint'e kadar olan önekin içeriğinden bir anahtar üretir ve o
+  anahtarla daha önce yazılmış bir girdi arar. Tek bir byte farkı bile farklı
+  anahtar demektir. "Benzer" diye bir şey yoktur.
+- Tam breakpoint'te eşleşme yoksa sunucu breakpoint'ten **geriye doğru** blok
+  sınırlarını da dener (dokümana göre yaklaşık 20 blok). Böylece breakpoint
+  kaydığında bir önceki turn'ün yazdığı önek yine bulunur. Ama değişiklik bu
+  pencereden daha gerideyse eşleşme bulunamaz.
+- Önek modele göre değişen bir **minimum uzunluğun** altındaysa cache'lenmez.
+  Hata da vermez, işaret sessizce yok sayılır. Kısa yan çağrılarda `cache write`
+  hep 0 görünmesinin sebebi budur.
+- Cache girdisi ancak onu yazan isteğin cevabı başladıktan sonra kullanılabilir.
+  Aynı anda başlayan paralel istekler (örn. aynı anda açılan subagent'lar)
+  birbirinin cache'ini göremez, her biri kendisi yazar.
+- Cache **model başınadır**. Sohbetin ortasında modeli değiştirirsen aynı önek
+  yeni modelde sıfırdan yazılır.
+
+**Neyin değişmesi neyi bozar?** Sıra araçlar → system → mesajlar olduğu için
+bir değişiklik kendisinden sonraki her şeyi geçersiz kılar:
+
+| Değişen | Bozulan | Tipik sebep |
+| --- | --- | --- |
+| Araç listesi / bir aracın tanımı | **her şey** | MCP sunucusu bağlandı/koptu, araç açıklaması güncellendi |
+| System prompt | system + mesajlar | Prompt'a gömülü tarih/saat, git status, değişen bir talimat dosyası |
+| Ortadaki bir mesaj | o mesajdan sonrası | Context editing (eski araç sonucunun temizlenmesi), compaction |
+| Thinking ayarı, `tool_choice` | mesajlar | Effort/thinking bütçesinin turn'ler arasında değişmesi |
+| Model | her şey | `/model` ile geçiş |
+
+**Örnek: partial hit.** System prompt'un sonunda saniyeli bir zaman damgası
+olduğunu düşün:
+
+```
+turn N    [tools][system: "... Current time: 14:02:11"◆][m0 … m37◆]
+turn N+1  [tools][system: "... Current time: 14:02:48"◆][m0 … m39◆]
+           └ read ┘└─────────── hepsi yeniden write ─────────────┘
+```
+
+Araçlar hâlâ cache'ten gelir ama system prompt ve **tüm geçmiş** her turn
+yeniden yazılır. Cache kartı burada kırmızı çizgiyi `system[1]` üzerine koyar
+ve hükmü *partial hit* olur. Tek bir değişken satır, her turn'ü 1.25× fiyatla
+ödenen bir yazmaya çevirir.
+
+**Örnek: önek aynı, yine de miss.** Kahve molası verdin, 7 dakika sonra
+döndün:
+
+```
+turn N    14:02  [tools][system◆][m0 … m37◆]      5m TTL
+turn N+1  14:09  [tools][system◆][m0 … m39◆]      7m since previous turn
+```
+
+Hiçbir byte değişmedi ama 5 dakikalık girdi düştü. Kart *miss* der ve
+açıklamada süreyi TTL ile karşılaştırır. Burada düzeltilecek bir hata yoktur.
+Uzun aralarla çalışılıyorsa 1 saatlik TTL daha ucuza gelebilir (yazması 2×,
+ama her moladan sonra tüm geçmişi yeniden yazmaktan ucuz).
 
 ### Tahmin mi, ölçüm mü?
 - Ring altındaki dört usage sayısı ve maliyetler **gerçek API verisinden**
@@ -176,6 +319,16 @@ Sadece birden fazla thread varsa görünür.
   açıkça yazmaz. Kart da bunu belirtir.
 - Satıra tıklamak o thread'in ilk turn'üne götürür.
 
+**Örnek okuma** (temsili): Bir subagent 9 turn boyunca dosya okuyup aramış,
+her turn kendi geçmişini yeniden göndermiş, toplam girdisi 600K token olmuş.
+Ana sohbete döndürdüğü özet 2K token. Oran 300×: ana sohbet kendi penceresini
+600K tokenla doldurmak yerine 2K'lık bir özet aldı. Subagent'ın değeri tam
+olarak bu takastır. Ama özet işe yaramıyorsa, o 600K boşa gitmiş demektir.
+
+Subagent'ın ilk turn'ü neden hep *cold start*? Çünkü kendi araç seti ve system
+prompt'u vardır, yani önek ana sohbetle aynı değildir. Ana sohbetin cache'inden
+faydalanamaz.
+
 ### 5.4 Cache: "Cache neden böyle davrandı?"
 Seçili turn'ü **aynı konuşmanın** bir önceki turn'üyle karşılaştırır.
 
@@ -246,6 +399,18 @@ turn'ün hatası (varsa `retry after`).
   thinking bloklarının taşıdığı imza tokenları. Bu imzalar sonraki her turn'de
   yeniden gönderilir ve kimse okuyamaz.
 
+Cevapta bir thinking bloğu kabaca şöyle görünür:
+
+```json
+{ "type": "thinking", "thinking": "", "signature": "EqQBCkYIBxgCKkB..." }
+```
+
+`thinking` alanı boş, `signature` ise şifreli ve uzun bir dizgedir. Claude Code
+bu bloğu sonraki istekte geçmişe aynen geri koyar. Model düşünce zincirini bu
+imzadan devam ettirir. Sonuç: çıktı token'ı olarak bir kez ödenen düşünme,
+sonraki turn'lerde imza olarak tekrar tekrar girdiye (çoğu zaman cache read
+olarak) biner.
+
 ### 5.7 History over time: "Pencere ne hızla doluyor?"
 - Sadece ana konuşma turn'lerinin (yan çağrılar hariç) dört usage serisi,
   üst üste alan grafiği. Bir noktaya tıklamak o turn'e götürür.
@@ -265,6 +430,23 @@ turn'ün hatası (varsa `retry after`).
 
 "≈N tokens the model can no longer see" = bu düzenlemelerle modelin artık
 göremediği token.
+
+**Örnek: edited in place.** Uzun bir oturumda Claude Code yer açmak için eski
+bir büyük araç sonucunu kısaltır:
+
+```
+turn 30  … m12: tool_result (Read, 18K tok: dosyanın tamamı) … m58
+turn 31  … m12: tool_result ("[cleared]")                   … m58 m59
+```
+
+Mesaj sayısı aynı ama `m12` farklı. History kartı turn 31'i *edited in place*
+olarak işaretler. Aynı anda Cache kartı da kırmızı çizgiyi `m12`'ye koyar:
+`m12`'den sonraki her şey yeniden yazılır. Yani yer açmanın da bir bedeli var:
+o turn'de geçmişin büyük kısmı 1.25× fiyatla yeniden cache'e yazılır.
+
+**Örnek: compacted.** `/compact` sonrası 120 mesajlık geçmiş, tek bir özet
+mesajına iner. Grafikte context alanı bir anda çöker. Takip eden turn bir
+*miss* ya da *partial hit*'tir (önek artık tamamen farklı).
 
 ### 5.8 What fills the window: "Pencerede ne var?"
 - **Oran çubuğu**: System prompt (turuncu) / Messages (mavi) / Tool
@@ -286,6 +468,24 @@ göremediği token.
   istekte ne kadar saptığı. Sayfadaki diğer tüm tahminleri bu oranla okursun.
 - **Gerçek istek atar, kota harcar.** Sonuç cache'lenir, ikinci tık bedavadır.
 
+Neden dört çağrı? `count_tokens` sadece toplam verir. Bölümleri ayırmak için
+tek mesajlık minimal bir istek taban alınır, her bölüm ona ayrı ayrı eklenir ve
+farklar alınır:
+
+```
+base   = count(minimal istek)              → istek iskeleti (overhead)
+tools  = count(base + tools)  − base       → araç tanımları
+system = count(base + system) − base       → system prompt
+full   = count(tam istek)
+messages = full − tools − system − base    → mesajlar
+```
+
+Neden `chars/4` sapar? Tokenizer metni karakter değil parça parça böler.
+Düz İngilizce metin kabaca 4 karaktere 1 token'a yakındır. JSON şemaları,
+kod, uzun hash/imza dizgeleri ve Türkçe gibi metinler daha fazla token'a
+bölünür. Araç şemaları ağırlıklı bir istekte tahminin aşağıda kalması bu
+yüzdendir.
+
 ### 5.10 Tool definitions: "Hangi araçları kapatabilirim?" (oturum geneli)
 - Üst satır: `N tools · X tokens of definitions`.
 - Her satır: araç adı, `×çağrı sayısı` ya da **never called** (soluk),
@@ -298,6 +498,15 @@ göremediği token.
     olurdu).
   - Araç listesi oturum içinde değişti mi? Değiştiyse her değişiklik **tüm
     cache'i** geçersiz kılar (araçlar önekin en başında).
+
+Neden "≈$A" bölüştürülüyor? Örnek (temsili): Bir turn'ün prompt maliyeti $0.05
+ve tanımlar o prompt'un %20'si. O turn için tanımlara $0.01 yazılır. Tanımlar
+çoğu turn cache'ten 0.1× fiyatla okunduğu için, "tanım tokenı × tam fiyat"
+hesabı gerçek bedeli on kat şişirirdi.
+
+Kullanılmayan bir aracı kapatmanın asıl kazancı her turn'deki küçük cache read
+değil, **cache'in yeniden yazıldığı** turn'lerdir (ilk turn, TTL sonrası,
+compaction): o turn'lerde tanımlar 1.25× fiyatla baştan yazılır.
 
 ### 5.11 Inside the system prompt
 - System prompt kendi markdown başlıklarına göre bölümlere ayrılır, her biri
